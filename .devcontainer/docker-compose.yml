@@ -1,0 +1,17 @@
+services:
+  attentio_cli_dev_service:
+    build:
+      context: .
+      dockerfile: Dockerfile # The path to our Dockerfile
+    command: /bin/bash
+    tty: true
+    privileged: true
+    ports:
+      - "3333:3333" # GDB Server Port
+      - "4444:4444" # Telnet Server Port
+      - "6666:6666" # TCL Server Port
+    #devices:
+    #  - "/dev/bus/usb/:/dev/bus/usb"
+    volumes:
+      - ../:/workspace:cached # To be able to spin up from devcontainers
+      - /dev:/dev #

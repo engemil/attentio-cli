@@ -1,0 +1,18 @@
+{
+    "name": "attentio_cli_development",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "attentio_cli_dev_service",
+    "shutdownAction": "none",
+    "workspaceFolder": "/workspace",
+    "remoteUser": "engemil",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+            ],
+            "settings": {
+            }
+        }
+    }
+}
+
+

@@ -6,10 +6,14 @@ FROM ubuntu:24.04
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install any additional tools you might want
+# Update and Install dependencies
 RUN apt-get update
+RUN apt-get install build-essential -y
+RUN apt-get install pkg-config -y
+RUN apt-get install libudev-dev -y
+RUN apt-get install libusb-1.0-0-dev -y
 
-# Install 
+# Install any additional tools you might want
 RUN apt-get install git -y
 RUN apt-get install curl -y
 RUN apt-get install minicom -y
@@ -39,12 +43,13 @@ RUN echo "engemil ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 # RUN AS USER FROM HERE
 USER $USERNAME
 
-RUN sudo curl -fsSL https://claude.ai/install.sh | bash
+# Install OpenCode CLI
 RUN sudo curl -fsSL https://opencode.ai/install | bash
-#RUN echo 'export PATH="/home/engemil/.local/bin:$PATH"' >> /home/$USERNAME/.bashrc && source /home/$USERNAME/.bashrc
-RUN sudo echo 'export PATH="/home/engemil/.local/bin:$PATH"' >> /home/$USERNAME/.bashrc
-# Add Super commando "claude --dangerously-skip-permissions" as alias claude-unchained
-RUN sudo echo 'alias claude-unchained="claude --dangerously-skip-permissions"' >> /home/$USERNAME/.bashrc
+
+# Install Rust toolchain
+RUN sudo curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+#RUN sudo echo 'source $HOME/.cargo/env' >> /home/$USERNAME/.bashrc
+RUN echo 'source $HOME/.cargo/env' >> /home/$USERNAME/.bashrc
 
 
 # Clean up

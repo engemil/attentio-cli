@@ -12,7 +12,7 @@ pub const ATTENTIO_VID: u16 = 0x0483;
 /// AttentioLight-1 USB Product ID.
 pub const ATTENTIO_PID: u16 = 0xDF11;
 
-/// Represents a CDC port role on an AttentioLight-1 device.
+/// Represents a CDC port role on a device.
 #[derive(Debug, Clone, Serialize)]
 pub enum CdcRole {
     /// Debug print stream (read-only).
@@ -42,7 +42,7 @@ pub struct CdcPort {
     pub role: CdcRole,
 }
 
-/// A discovered AttentioLight-1 device, potentially with multiple CDC ports.
+/// A discovered device, potentially with multiple CDC ports.
 #[derive(Debug, Clone, Serialize)]
 pub struct AttentioDevice {
     /// USB serial number (unique per device).
@@ -97,7 +97,7 @@ struct RawUsbPort {
     info: UsbPortInfo,
 }
 
-/// Discover all connected AttentioLight-1 devices.
+/// Discover all connected devices.
 ///
 /// Enumerates serial ports, filters by VID/PID, groups by serial number,
 /// and classifies CDC ports (dual CDC: lower port number = CDC0, higher = CDC1).
@@ -115,7 +115,7 @@ pub fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
 /// Filters by VID/PID, groups by serial number, and classifies CDC ports.
 /// Separated from `find_devices` to allow unit testing with mock port data.
 pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<AttentioDevice> {
-    // Filter to AttentioLight-1 ports only
+    // Filter ports for attentio related device(s) only
     let attentio_ports: Vec<RawUsbPort> = ports
         .into_iter()
         .filter_map(|port| match port.port_type {
@@ -132,7 +132,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
         .collect();
 
     debug!(
-        "Found {} AttentioLight-1 serial ports",
+        "Found {} serial ports",
         attentio_ports.len()
     );
 
@@ -203,7 +203,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
     // Sort devices by serial for deterministic output
     devices.sort_by(|a, b| a.serial.cmp(&b.serial));
 
-    debug!("Discovered {} AttentioLight-1 device(s)", devices.len());
+    debug!("Discovered {} device(s)", devices.len());
     devices
 }
 

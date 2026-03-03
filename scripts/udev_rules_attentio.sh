@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# udev_rules_attentio.sh - Script to set up udev rules for AttentioLight-1 in Linux (e.g. Ubuntu)
+# udev_rules_attentio.sh - Script to set up udev rules in Linux (e.g. Ubuntu)
 # This script creates a udev rule to allow non-root users.
 # It also adds the current user to the 'plugdev' group, which is necessary for USB device access.
 #

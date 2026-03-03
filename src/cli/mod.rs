@@ -2,7 +2,7 @@ pub mod commands;
 
 use clap::{Parser, Subcommand};
 
-/// CLI tool for AttentioLight-1 (AL-1) device management.
+/// CLI tool for device management.
 #[derive(Debug, Parser)]
 #[command(name = "attentio", version, about, long_about = None)]
 pub struct Cli {
@@ -24,7 +24,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// List connected AttentioLight-1 devices.
+    /// List connected device(s).
     List,
 
     /// Open an interactive ChibiOS shell session.

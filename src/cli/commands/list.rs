@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::device::discovery::{find_devices, AttentioDevice};
 
-/// Execute the `list` command — enumerate and display connected AttentioLight-1 devices.
+/// Execute the `list` command — enumerate and display connected device(s).
 pub fn execute(json: bool) -> Result<()> {
     let devices = find_devices()?;
 
@@ -10,7 +10,7 @@ pub fn execute(json: bool) -> Result<()> {
         if json {
             println!("[]");
         } else {
-            println!("No AttentioLight-1 devices found.");
+            println!("No device(s) found.");
         }
         return Ok(());
     }

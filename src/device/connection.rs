@@ -6,14 +6,14 @@ use tracing::{debug, trace};
 
 use crate::error::AttentioError;
 
-/// Default baud rate for AttentioLight-1 CDC serial ports.
+/// Default baud rate for CDC serial ports.
 /// CDC/ACM is virtual serial — baud rate is ignored by USB, but required by the API.
 const DEFAULT_BAUD_RATE: u32 = 115200;
 
 /// Default timeout for command responses.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// An async connection to an AttentioLight-1 device over a serial port.
+/// An async connection to a device over a serial port.
 pub struct DeviceConnection {
     reader: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
     writer: tokio::io::WriteHalf<tokio_serial::SerialStream>,

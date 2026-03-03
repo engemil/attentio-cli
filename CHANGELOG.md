@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the AttentioLight CLI (attentio) project will be documented in this file.
+All notable changes to the Attentio CLI (`attentio`) project will be documented in this file.
 
 **Version Format:** MAJOR.MINOR.PATCH
 - **MAJOR:** Incompatible API/protocol changes

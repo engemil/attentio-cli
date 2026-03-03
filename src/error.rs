@@ -3,7 +3,7 @@ use thiserror::Error;
 /// Attentio CLI error types.
 #[derive(Debug, Error)]
 pub enum AttentioError {
-    #[error("no AttentioLight-1 devices found")]
+    #[error("no device(s) found")]
     DeviceNotFound,
 
     #[error("multiple devices found — use --device <serial> to select one: {serials}")]

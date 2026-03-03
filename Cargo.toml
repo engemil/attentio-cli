@@ -1,0 +1,33 @@
+[package]
+name = "attentio"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool for AttentioLight-1 (AL-1) device management"
+license = "MIT"
+
+[[bin]]
+name = "attentio"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-serial = "5"
+
+# Serial port enumeration
+serialport = "4"
+
+# Serialization (for --json output)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

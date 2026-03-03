@@ -220,6 +220,8 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ## Future
 
+- Unit tests for discovery logic (`devices_from_ports`, `select_device`) and connection handling
+- CI/CD pipeline (GitHub Actions: build, clippy, rustfmt, tests)
 - Post-build data injection script and included in CLI tool
 - USB HID/Bulk alternatives
 - USB wake-up from host

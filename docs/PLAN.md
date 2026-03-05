@@ -98,16 +98,7 @@ Required changes to support CLI:
 | **Serial number** | Store unique ID in EFL, return via `settings get serial` |
 | **Response format** | Standardize: `OK\r\n` or `ERROR <msg>\r\n` |
 
-Shell command examples:
-```
-version          -> "1.0.0\r\nOK\r\n"
-led mode pulse   -> "OK\r\n"
-led color red    -> "OK\r\n"
-led brightness 80 -> "OK\r\n"
-settings get serial -> "ABC123\r\nOK\r\n"
-settings set name "My Light" -> "OK\r\n"
-dfu              -> (device reboots to DFU)
-```
+See [shell_commands.md](shell_commands.md) for the full command protocol specification.
 
 ## udev Rule (optional)
 

@@ -69,7 +69,6 @@ impl AttentioDevice {
     }
 
     /// Returns the debug prints port path (CDC0 if dual, None otherwise).
-    #[allow(dead_code)] // Used in Phase 3 (monitor)
     pub fn debug_port(&self) -> Option<&str> {
         self.cdc0.as_ref().map(|p| p.path.as_str())
     }
@@ -131,10 +130,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
         })
         .collect();
 
-    debug!(
-        "Found {} serial ports",
-        attentio_ports.len()
-    );
+    debug!("Found {} serial ports", attentio_ports.len());
 
     if attentio_ports.is_empty() {
         return Vec::new();

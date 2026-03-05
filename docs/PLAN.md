@@ -2,6 +2,19 @@
 
 CLI tool for AttentioLight-1 (AL-1) device management.
 
+### Implementation Status
+
+| Command | Status |
+|---------|--------|
+| `list` | Done |
+| `send`, `shell` | Done |
+| `monitor` | Done |
+| `led` | Planned (Phase 4) |
+| `settings` | Planned (Phase 5) |
+| `dfu`, `dfu-enter` | Planned (Phase 6) |
+| `completions` | Planned |
+
+
 ## Stack
 
 | Layer | Crate | Purpose |
@@ -44,7 +57,7 @@ Global flags: `--device <serial>`, `--json`, `--verbose`
 2. **Basic comms** - `list`, `send`, `shell`
 3. **TUI** - `monitor` with dual CDC view (prints + shell)
 4. **LED** - `led` command
-5. **Settings** - get/set, TOML presets
+5. **Settings** - get/set, TOML presets, config management commands
 6. **DFU** - dfu-libusb integration, `dfu-enter`
 
 ## Device Protocol
@@ -217,6 +230,14 @@ cargo build --release    # Release
 # Static binary (any Linux distro)
 cargo build --release --target x86_64-unknown-linux-musl
 ```
+
+## Config Management (Phase 5)
+
+User config lives at `~/.config/attentio/config.toml`. Additional commands for managing it:
+
+- `attentio config path` — print the config directory location
+- `attentio config reset` — delete user config files
+- Document manual removal in README uninstall section as a fallback
 
 ## Future
 

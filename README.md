@@ -28,18 +28,6 @@ attentio completions <shell>               # Generate shell completions
 | `--json` | Output results as JSON for scripting |
 | `-v, --verbose` | Enable verbose/debug output |
 
-### Implementation Status
-
-| Command | Status |
-|---------|--------|
-| `list` | Done |
-| `send`, `shell` | Done |
-| `monitor` | Planned (Phase 3) |
-| `led` | Planned (Phase 4) |
-| `settings` | Planned (Phase 5) |
-| `dfu`, `dfu-enter` | Planned (Phase 6) |
-| `completions` | Planned |
-
 ## Setup
 
 ### Rust Toolchain
@@ -83,14 +71,26 @@ brew install libusb
 
 ```bash
 cargo build --release                # Release build
-cargo run -- list                    # Run during development
-cargo run -- list --json             # Dev run with flags
+# Run commands: cargo run -- <command>
+cargo run -- list                    # Test
+```
+
+Clean up:
+```bash
+cargo clean
 ```
 
 ### Install Locally
 
 ```bash
 cargo install --path .               # Installs 'attentio' to ~/.cargo/bin
+# Run commands: attentio <command>
+attentio list                        # Test
+```
+
+Clean up local install
+```bash
+cargo uninstall attentio
 ```
 
 ### udev Rules (Linux, optional)

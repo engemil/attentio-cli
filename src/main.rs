@@ -1,6 +1,7 @@
 mod cli;
 mod device;
 mod error;
+mod tui;
 
 use anyhow::Result;
 use clap::Parser;

@@ -13,6 +13,30 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-03-06)
+
+Added
+
+- **`monitor` TUI command** (Phase 3) — real-time dashboard with dual CDC view.
+  - Horizontal split layout: debug prints (CDC0) on top, interactive shell (CDC1) on bottom.
+  - Async architecture: background reader tasks for both CDC ports with mpsc channels.
+  - Input line with cursor navigation, backspace/delete, home/end.
+  - Command history with up/down arrow recall.
+  - Scrollable panes with PageUp/PageDown.
+  - Tab to switch focus between debug and shell panes.
+  - Graceful single-CDC fallback: shell-only TUI when device has no separate debug port.
+  - Status bar with device serial, focus indicator, and key hints.
+  - Clean terminal restore on exit (Esc/Ctrl+C).
+- **TUI module** (`src/tui/`) with separated concerns: `app.rs` (state), `ui.rs` (rendering), `event.rs` (input handling).
+- New dependencies: `ratatui`, `crossterm` (with event-stream), `futures`.
+
+Changed
+
+- Removed `#[allow(dead_code)]` from `debug_port()`, `read_line()`, and `with_timeout()` — now used by monitor.
+- Updated README implementation status: `monitor` marked as Done.
+
+---
+
 ## [Development] (2026-03-03)
 
 Added

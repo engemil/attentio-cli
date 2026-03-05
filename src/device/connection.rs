@@ -39,7 +39,6 @@ impl DeviceConnection {
     }
 
     /// Set the command response timeout.
-    #[allow(dead_code)] // Used in future phases (monitor, etc.)
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -112,7 +111,6 @@ impl DeviceConnection {
     }
 
     /// Read a single line from the port (useful for debug print streams).
-    #[allow(dead_code)] // Used in Phase 3 (monitor)
     pub async fn read_line(&mut self) -> Result<String, AttentioError> {
         let mut line = String::new();
 
@@ -129,9 +127,7 @@ impl DeviceConnection {
                 message: "connection closed".to_string(),
             }),
             Ok(Ok(_)) => {
-                let trimmed = line
-                    .trim_end_matches(['\r', '\n'])
-                    .to_string();
+                let trimmed = line.trim_end_matches(['\r', '\n']).to_string();
                 Ok(trimmed)
             }
             Ok(Err(e)) => Err(e),
@@ -142,7 +138,7 @@ impl DeviceConnection {
     }
 
     /// Write raw bytes to the port (useful for interactive shell).
-    #[allow(dead_code)] // Used in Phase 3 (monitor/shell improvements)
+    #[allow(dead_code)] // Reserved for future shell/monitor improvements
     pub async fn write_raw(&mut self, data: &[u8]) -> Result<(), AttentioError> {
         self.writer
             .write_all(data)

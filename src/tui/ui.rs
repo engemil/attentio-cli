@@ -30,10 +30,23 @@ fn render_debug_pane(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let title = match (&app.debug_port_path, app.debug_connected) {
-        (Some(path), true) => format!(" Debug Prints (CDC0) \u{2014} {} ", path),
-        (Some(path), false) => format!(" Debug Prints (CDC0) \u{2014} {} (not connected) ", path),
-        (None, _) => " Debug Prints (CDC0) \u{2014} (not connected) ".to_string(),
+    let title = match (
+        &app.debug_port_path,
+        app.debug_connected,
+        app.debug_reconnecting,
+        app.debug_port_busy,
+    ) {
+        (Some(path), true, _, _) => format!(" Debug Prints (CDC0) \u{2014} {} ", path),
+        (Some(path), false, _, true) => {
+            format!(" Debug Prints (CDC0) \u{2014} {} (PORT BUSY) ", path)
+        }
+        (Some(path), false, true, _) => {
+            format!(" Debug Prints (CDC0) \u{2014} {} (reconnecting...) ", path)
+        }
+        (Some(path), false, false, false) => {
+            format!(" Debug Prints (CDC0) \u{2014} {} (not connected) ", path)
+        }
+        (None, _, _, _) => " Debug Prints (CDC0) \u{2014} (not connected) ".to_string(),
     };
 
     let block = Block::default()
@@ -45,12 +58,16 @@ fn render_debug_pane(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     if !app.debug_connected {
-        // Show centered "(not connected)" message
-        let msg = Paragraph::new(Line::from(Span::styled(
-            "(not connected)",
-            Style::default().fg(Color::DarkGray),
-        )))
-        .alignment(Alignment::Center);
+        // Show centered status message
+        let (text, color) = if app.debug_port_busy {
+            ("(port busy \u{2014} close other process)", Color::Red)
+        } else if app.debug_reconnecting {
+            ("(reconnecting...)", Color::Yellow)
+        } else {
+            ("(not connected)", Color::DarkGray)
+        };
+        let msg = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
+            .alignment(Alignment::Center);
         // Center vertically
         let y_offset = inner.height / 2;
         let centered = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
@@ -107,10 +124,23 @@ fn render_shell_pane(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let title = match (&app.shell_port_path, app.shell_connected) {
-        (Some(path), true) => format!(" Shell (CDC1) \u{2014} {} ", path),
-        (Some(path), false) => format!(" Shell (CDC1) \u{2014} {} (not connected) ", path),
-        (None, _) => " Shell (CDC1) \u{2014} (not connected) ".to_string(),
+    let title = match (
+        &app.shell_port_path,
+        app.shell_connected,
+        app.shell_reconnecting,
+        app.shell_port_busy,
+    ) {
+        (Some(path), true, _, _) => format!(" Shell (CDC1) \u{2014} {} ", path),
+        (Some(path), false, _, true) => {
+            format!(" Shell (CDC1) \u{2014} {} (PORT BUSY) ", path)
+        }
+        (Some(path), false, true, _) => {
+            format!(" Shell (CDC1) \u{2014} {} (reconnecting...) ", path)
+        }
+        (Some(path), false, false, false) => {
+            format!(" Shell (CDC1) \u{2014} {} (not connected) ", path)
+        }
+        (None, _, _, _) => " Shell (CDC1) \u{2014} (not connected) ".to_string(),
     };
 
     let output_block = Block::default()
@@ -122,12 +152,16 @@ fn render_shell_pane(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(output_block, chunks[0]);
 
     if !app.shell_connected {
-        // Show centered "(not connected)" message
-        let msg = Paragraph::new(Line::from(Span::styled(
-            "(not connected)",
-            Style::default().fg(Color::DarkGray),
-        )))
-        .alignment(Alignment::Center);
+        // Show centered status message
+        let (text, color) = if app.shell_port_busy {
+            ("(port busy \u{2014} close other process)", Color::Red)
+        } else if app.shell_reconnecting {
+            ("(reconnecting...)", Color::Yellow)
+        } else {
+            ("(not connected)", Color::DarkGray)
+        };
+        let msg = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
+            .alignment(Alignment::Center);
         let y_offset = output_inner.height / 2;
         let centered = Rect::new(
             output_inner.x,

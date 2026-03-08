@@ -6,10 +6,10 @@ services:
     command: /bin/bash
     tty: true
     privileged: true
-    ports:
-      - "3333:3333" # GDB Server Port
-      - "4444:4444" # Telnet Server Port
-      - "6666:6666" # TCL Server Port
+#    ports:
+#      - "3333:3333" # GDB Server Port
+#      - "4444:4444" # Telnet Server Port
+#      - "6666:6666" # TCL Server Port
     #devices:
     #  - "/dev/bus/usb/:/dev/bus/usb"
     volumes:

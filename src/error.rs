@@ -12,6 +12,9 @@ pub enum AttentioError {
     #[error("device with serial '{serial}' not found")]
     DeviceSerialNotFound { serial: String },
 
+    #[error("port {port} is busy — another process has it open")]
+    PortBusy { port: String },
+
     #[error("serial port error: {0}")]
     Serial(#[from] serialport::Error),
 
@@ -26,4 +29,11 @@ pub enum AttentioError {
 
     #[error("{0}")]
     Other(String),
+}
+
+impl AttentioError {
+    /// Returns true if this error indicates the port is busy (held by another process).
+    pub fn is_port_busy(&self) -> bool {
+        matches!(self, AttentioError::PortBusy { .. })
+    }
 }

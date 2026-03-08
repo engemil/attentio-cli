@@ -13,6 +13,57 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-03-08)
+
+Added
+
+- **Auto-reconnection for TUI monitor** — both CDC0 (debug) and CDC1 (shell) ports now
+  automatically retry every 3 seconds when a port is unavailable at startup or disconnects
+  mid-session. The TUI shows "(reconnecting...)" in yellow instead of "(not connected)".
+- **Exclusive serial port access with `TIOCEXCL`** — after opening via manual `libc::open()`
+  + termios configuration, the port is claimed exclusively so that future processes cannot
+  open it while attentio holds it.
+- **Port-busy detection via `/proc` scan** — before opening a serial port, scans
+  `/proc/*/fd/` to check if any other process already has the device open. Returns a clear
+  `PortBusy` error.
+- **`PortBusy` error variant** in `AttentioError` with `is_port_busy()` helper, fully wired
+  into the serial port open logic.
+- **TUI "port busy" status** — when a port is held by another process, the monitor pane shows
+  `(PORT BUSY)` in the title and `(port busy — close other process)` in red. A background
+  reconnect task retries every 3 seconds; when the other process releases the port, the pane
+  automatically connects.
+- New dependency: `libc` (POSIX serial port open).
+
+Changed
+
+- **Monitor starts even with busy ports** — if one or both CDC ports are busy at startup, the
+  TUI launches with the busy pane(s) showing the red status while available ports work normally.
+- **Shell disconnect detection while idle** — the shell I/O task now performs health-check
+  reads while waiting for user input, so USB cable pulls are detected promptly (within ~5 s)
+  instead of only on the next command attempt.
+- **Improved `send_command()` protocol handling**:
+  - Echo line skipping — ChibiOS echoes back the sent command; the first received line
+    matching the sent text is now silently discarded.
+  - Stale buffer draining before sending — clears leftover prompt bytes from previous commands.
+  - Inter-line timeout (300 ms) — handles commands (like ChibiOS `help`) that print output
+    without an `OK`/`ERROR` terminator.
+  - Partial response return on hard timeout — returns collected lines instead of erroring
+    when data was received but the terminator never arrived.
+- TUI pane titles and status messages now distinguish "reconnecting..." (yellow) from
+  "not connected" (gray).
+- Updated README:
+  - Added implementation status table.
+  - Marked unimplemented commands as `(planned)` in usage section.
+  - Added `monitor` feature summary (auto-reconnect, exclusive serial with busy detection, scrolling, history).
+  - Rewrote udev section: recommend running the script, added `dialout` group note,
+    moved manual steps into collapsible details block.
+  - Clarified `--json` scope (currently `list` and `send`).
+- Improved TUI terminal setup/cleanup — raw mode and alternate screen init wrapped so
+  cleanup always runs even if setup fails.
+- Commented out unused port mappings in `.devcontainer/docker-compose.yml`.
+
+---
+
 ## [Development] (2026-03-06)
 
 Added
@@ -28,7 +79,7 @@ Added
   - Status bar with device serial, focus indicator, and key hints.
   - Clean terminal restore on exit (Esc/Ctrl+C).
 - **TUI module** (`src/tui/`) with separated concerns: `app.rs` (state), `ui.rs` (rendering), `event.rs` (input handling).
-- New dependencies: `ratatui`, `crossterm` (with event-stream), `futures`.
+- New dependencies: `ratatui`, `crossterm` (with event-stream).
 
 Changed
 

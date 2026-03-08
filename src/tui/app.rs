@@ -51,6 +51,16 @@ pub struct App {
     /// Whether the shell CDC port (CDC1) is connected.
     pub shell_connected: bool,
 
+    /// Whether the debug port is currently attempting to reconnect.
+    pub debug_reconnecting: bool,
+    /// Whether the shell port is currently attempting to reconnect.
+    pub shell_reconnecting: bool,
+
+    /// Whether the debug port is busy (held by another process).
+    pub debug_port_busy: bool,
+    /// Whether the shell port is busy (held by another process).
+    pub shell_port_busy: bool,
+
     /// Whether the TUI is still running.
     pub running: bool,
 
@@ -88,6 +98,10 @@ impl App {
             focus: Pane::Shell,
             debug_connected,
             shell_connected,
+            debug_reconnecting: false,
+            shell_reconnecting: false,
+            debug_port_busy: false,
+            shell_port_busy: false,
             running: true,
             device_serial,
             debug_port_path,

@@ -1,42 +1,29 @@
 # Attentio CLI
 
-CLI tool for AttentioLight-1 (AL-1) device management.
+CLI tool for AttentioLight-1 (AL-1) device management. Designed to be interactive either by sending the commands directly (e.g. `attentio send help`) or by using the `monitor` command, which provides a real-time TUI dashboard with dual CDC view.
 
-## Usage
+**NB!** Tested on Ubuntu 24.04 (not yet tested on alternative distros, nor operative systems).
 
-```bash
-attentio list                              # List connected devices
-attentio list --json                       # JSON output (for scripting)
-attentio send <cmd> [--device <serial>]    # One-shot command
-attentio shell [--device <serial>]         # Interactive ChibiOS shell
-attentio monitor [--device <serial>]       # TUI dashboard (CDC0 + CDC1)
-attentio led <mode> [options]              # LED mode/settings
-attentio settings get <key>                # Read setting
-attentio settings set <key> <value>        # Write setting
-attentio settings load <file.toml>         # Apply preset
-attentio settings save <file.toml>         # Export settings
-attentio dfu <firmware.bin>                # Flash firmware
-attentio dfu-enter                         # Enter bootloader mode
-attentio completions <shell>               # Generate shell completions
-```
+## Table of Contents
 
-### Global Flags
-
-| Flag | Description |
-|------|-------------|
-| `-d, --device <serial>` | Target device by serial number (defaults to only connected device) |
-| `--json` | Output results as JSON for scripting |
-| `-v, --verbose` | Enable verbose/debug output |
+- [Setup](#setup)
+    - [Build & Run](#build--run)
+    - [Install Locally](#install-locally)
+    - [udev Rules for Linux (optional)](#udev-rules-for-linux-optional)
+- [Usage](#usage)
+    - [Global Flags](#global-flags)
+    - [TUI Usage](#tui-usage)
+- [License](#license)
 
 ## Setup
 
-### Rust Toolchain
+**Rust Toolchain**
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-### System Dependencies
+**System Dependencies**
 
 **Ubuntu/Debian:**
 ```bash
@@ -93,20 +80,84 @@ Clean up local install
 cargo uninstall attentio
 ```
 
-### udev Rules (Linux, optional)
+### udev Rules for Linux (optional)
 
-For non-root USB access, create `/etc/udev/rules.d/99-attentio.rules`:
+For non-root serial port access, the easiest approach is to run the provided script on the
+**host OS** (not inside a container):
+
+```bash
+sudo ./scripts/udev_rules_attentio.sh
+```
+
+The script creates udev rules in `/etc/udev/rules.d/99-attentio.rules` and adds the
+current user to the `dialout` and `plugdev` groups (log out and back in for group changes
+to take effect).
+
+**Manual setup (without the script)**
+
+Create `/etc/udev/rules.d/99-attentio.rules`:
 ```
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0666"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0666", SYMLINK+="attentio-%s{serial}"
 ```
 
-Reload rules:
+Reload rules and add yourself to the `dialout` group:
 ```bash
 sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG dialout $USER
 ```
 
-**NB!** Script available for this, `scripts/udev_rules_attentio.sh`.
+**Permission problem in Linux**
+
+Without udev rules / group membership you will get **permission denied**:
+```
+WARN Failed to open debug port /dev/ttyACM1: Permission denied
+WARN Failed to open shell port /dev/ttyACM2: Permission denied
+```
+
+## Usage
+
+```bash
+attentio list                              # List connected devices
+attentio list --json                       # JSON output (for scripting)
+attentio send <cmd> [--device <serial>]    # One-shot command
+attentio shell [--device <serial>]         # Interactive ChibiOS shell (serial from 'list')
+attentio monitor [--device <serial>]       # TUI dashboard (dual CDC, auto-reconnect)
+attentio led <mode> [options]              # LED mode/settings (planned)
+attentio settings get <key>                # Read setting (planned)
+attentio settings set <key> <value>        # Write setting (planned)
+attentio settings load <file.toml>         # Apply preset (planned)
+attentio settings save <file.toml>         # Export settings (planned)
+attentio dfu <firmware.bin>                # Flash firmware (planned)
+attentio dfu-enter                         # Enter bootloader mode (planned)
+attentio completions <shell>               # Generate shell completions (planned)
+```
+
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `-d, --device <serial>` | Target device by serial number (defaults to only connected device) |
+| `--json` | Output results as JSON (currently used by `list` and `send`) |
+| `-v, --verbose` | Enable verbose/debug output |
+
+(More info will come, to show better use-case)
+
+
+### TUI Usage
+
+Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bottom.
+
+- **Auto-reconnect** — retries every 3 s when a port is unavailable or disconnects mid-session
+- **Port-busy detection** — if another process (minicom, etc.) holds a port, the pane indicates that port is busy and retries until the port is released
+- **Idle disconnect detection** — Detects if any of the ports gets disconnected even when the
+  shell is idle. Clearify marked by reconnecting info.
+
+**TUI Control**
+- **PageUp** / **PageDown** to scroll each pane
+- **Up** / **Down** to recall previous commands
+- **Tab** to switch focus between debug and shell panes
+- **Esc** / **CTRL** + **C** to quit
 
 ## License
 

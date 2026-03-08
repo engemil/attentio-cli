@@ -20,6 +20,9 @@ tokio-serial = "5"
 # Serial port enumeration
 serialport = "4"
 
+# Low-level POSIX (already a transitive dep; used for non-exclusive serial port open)
+libc = "0.2"
+
 # Serialization (for --json output)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

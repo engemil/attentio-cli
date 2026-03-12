@@ -74,6 +74,7 @@ pub enum Command {
     },
 
     /// Enter DFU bootloader mode on the device.
+    #[command(visible_alias = "bootloader-enter")]
     DfuEnter,
 
     /// Generate shell completions.

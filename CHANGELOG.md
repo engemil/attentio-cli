@@ -17,6 +17,8 @@ Note: Update `Cargo.toml` when publishing new version.
 
 Added
 
+- **Command alias `bootloader-enter` for `dfu-enter`** — both commands now work interchangeably 
+  to enter DFU bootloader mode. The alias is visible in help output for better discoverability.
 - **Auto-reconnection for TUI** — both CDC0 (debug) and CDC1 (shell) ports now
   automatically retry every 3 seconds when a port is unavailable at startup or disconnects
   mid-session. The TUI shows "(reconnecting...)" in yellow instead of "(not connected)".

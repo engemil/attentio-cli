@@ -128,8 +128,9 @@ attentio settings get <key>                # Read setting (planned)
 attentio settings set <key> <value>        # Write setting (planned)
 attentio settings load <file.toml>         # Apply preset (planned)
 attentio settings save <file.toml>         # Export settings (planned)
-attentio dfu <firmware.bin>                # Flash firmware (planned)
-attentio dfu-enter                         # Enter bootloader mode (planned)
+attentio dfu <firmware.bin>                # Enter bootloader mode and flash application firmware (planned)
+attentio dfu-enter                         # Enter bootloader mode
+attentio bootloader-enter                  # Same as "dfu-enter"
 attentio completions <shell>               # Generate shell completions (planned)
 ```
 

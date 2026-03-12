@@ -239,7 +239,7 @@ impl DeviceConnection {
     }
 
     /// Write raw bytes to the port (useful for interactive shell).
-    #[allow(dead_code)] // Reserved for future shell/monitor improvements
+    #[allow(dead_code)] // Reserved for future shell/TUI improvements
     pub async fn write_raw(&mut self, data: &[u8]) -> Result<(), AttentioError> {
         self.writer
             .write_all(data)

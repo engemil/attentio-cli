@@ -44,8 +44,8 @@ pub enum Command {
         device: Option<String>,
     },
 
-    /// Open TUI dashboard with dual CDC view (debug prints + shell).
-    Monitor {
+    /// Launch TUI to monitor CDC data streams (debug prints + shell).
+    Tui {
         /// Target device by serial number.
         #[arg(long, short)]
         device: Option<String>,

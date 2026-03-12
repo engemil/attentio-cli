@@ -44,9 +44,9 @@ async fn main() -> Result<()> {
             cli::commands::shell::execute(device).await?;
         }
 
-        Command::Monitor { device } => {
+        Command::Tui { device } => {
             let device = device.as_deref().or(global_device);
-            cli::commands::monitor::execute(device).await?;
+            cli::commands::tui::execute(device).await?;
         }
 
         Command::Led { mode, options } => {

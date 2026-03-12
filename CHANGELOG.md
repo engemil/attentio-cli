@@ -13,11 +13,11 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
-## [Development] (2026-03-08)
+## [Development] (2026-03-12)
 
 Added
 
-- **Auto-reconnection for TUI monitor** — both CDC0 (debug) and CDC1 (shell) ports now
+- **Auto-reconnection for TUI** — both CDC0 (debug) and CDC1 (shell) ports now
   automatically retry every 3 seconds when a port is unavailable at startup or disconnects
   mid-session. The TUI shows "(reconnecting...)" in yellow instead of "(not connected)".
 - **Exclusive serial port access with `TIOCEXCL`** — after opening via manual `libc::open()`
@@ -28,15 +28,30 @@ Added
   `PortBusy` error.
 - **`PortBusy` error variant** in `AttentioError` with `is_port_busy()` helper, fully wired
   into the serial port open logic.
-- **TUI "port busy" status** — when a port is held by another process, the monitor pane shows
+- **TUI "port busy" status** — when a port is held by another process, the TUI pane shows
   `(PORT BUSY)` in the title and `(port busy — close other process)` in red. A background
   reconnect task retries every 3 seconds; when the other process releases the port, the pane
   automatically connects.
 - New dependency: `libc` (POSIX serial port open).
+- **`monitor` TUI command** - real-time dashboard with dual CDC view.
+  - Horizontal split layout: debug prints (CDC0) on top, interactive shell (CDC1) on bottom.
+  - Async architecture: background reader tasks for both CDC ports with mpsc channels.
+  - Input line with cursor navigation, backspace/delete, home/end.
+  - Command history with up/down arrow recall.
+  - Scrollable panes with PageUp/PageDown.
+  - Tab to switch focus between debug and shell panes.
+  - Graceful single-CDC fallback: shell-only TUI when device has no separate debug port.
+  - Status bar with device serial, focus indicator, and key hints.
+  - Clean terminal restore on exit (Esc/Ctrl+C).
+- **TUI module** (`src/tui/`) with separated concerns: `app.rs` (state), `ui.rs` (rendering), `event.rs` (input handling).
+- New dependencies: `ratatui`, `crossterm` (with event-stream).
 
 Changed
 
-- **Monitor starts even with busy ports** — if one or both CDC ports are busy at startup, the
+- **Renamed `monitor` command to `tui`** — the command is now invoked as `attentio tui` for 
+  clarity. All documentation and internal references updated accordingly. The command still 
+  provides the same functionality: TUI dashboard for monitoring CDC data streams.
+- **TUI starts even with busy ports** — if one or both CDC ports are busy at startup, the
   TUI launches with the busy pane(s) showing the red status while available ports work normally.
 - **Shell disconnect detection while idle** — the shell I/O task now performs health-check
   reads while waiting for user input, so USB cable pulls are detected promptly (within ~5 s)
@@ -61,30 +76,8 @@ Changed
 - Improved TUI terminal setup/cleanup — raw mode and alternate screen init wrapped so
   cleanup always runs even if setup fails.
 - Commented out unused port mappings in `.devcontainer/docker-compose.yml`.
-
----
-
-## [Development] (2026-03-06)
-
-Added
-
-- **`monitor` TUI command** (Phase 3) — real-time dashboard with dual CDC view.
-  - Horizontal split layout: debug prints (CDC0) on top, interactive shell (CDC1) on bottom.
-  - Async architecture: background reader tasks for both CDC ports with mpsc channels.
-  - Input line with cursor navigation, backspace/delete, home/end.
-  - Command history with up/down arrow recall.
-  - Scrollable panes with PageUp/PageDown.
-  - Tab to switch focus between debug and shell panes.
-  - Graceful single-CDC fallback: shell-only TUI when device has no separate debug port.
-  - Status bar with device serial, focus indicator, and key hints.
-  - Clean terminal restore on exit (Esc/Ctrl+C).
-- **TUI module** (`src/tui/`) with separated concerns: `app.rs` (state), `ui.rs` (rendering), `event.rs` (input handling).
-- New dependencies: `ratatui`, `crossterm` (with event-stream).
-
-Changed
-
-- Removed `#[allow(dead_code)]` from `debug_port()`, `read_line()`, and `with_timeout()` — now used by monitor.
-- Updated README implementation status: `monitor` marked as Done.
+- Removed `#[allow(dead_code)]` from `debug_port()`, `read_line()`, and `with_timeout()` — now used by TUI.
+- Updated README implementation status: TUI command marked as Done.
 
 ---
 

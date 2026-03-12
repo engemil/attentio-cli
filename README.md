@@ -1,6 +1,6 @@
 # Attentio CLI
 
-CLI tool for AttentioLight-1 (AL-1) device management. Designed to be interactive either by sending the commands directly (e.g. `attentio send help`) or by using the `monitor` command, which provides a real-time TUI dashboard with dual CDC view.
+CLI tool for AttentioLight-1 (AL-1) device management. Designed to be interactive either by sending the commands directly (e.g. `attentio send help`) or by using the `tui` command, real-time TUI dashboard with dual CDC (shell and serial prints).
 
 **NB!** Tested on Ubuntu 24.04 (not yet tested on alternative distros, nor operative systems).
 
@@ -122,7 +122,7 @@ attentio list                              # List connected devices
 attentio list --json                       # JSON output (for scripting)
 attentio send <cmd> [--device <serial>]    # One-shot command
 attentio shell [--device <serial>]         # Interactive ChibiOS shell (serial from 'list')
-attentio monitor [--device <serial>]       # TUI dashboard (dual CDC, auto-reconnect)
+attentio tui [--device <serial>]           # TUI dashboard (dual CDC, auto-reconnect)
 attentio led <mode> [options]              # LED mode/settings (planned)
 attentio settings get <key>                # Read setting (planned)
 attentio settings set <key> <value>        # Write setting (planned)

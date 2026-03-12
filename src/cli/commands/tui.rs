@@ -51,7 +51,7 @@ fn restore_terminal() {
     let _ = io::stdout().execute(LeaveAlternateScreen);
 }
 
-/// Execute the `monitor` command — TUI dashboard with dual CDC view.
+/// Execute the `tui` command — TUI dashboard with dual CDC view.
 ///
 /// Always shows both panes (debug prints + shell). Each CDC port is opened
 /// independently — if one fails, that pane shows "(reconnecting...)" and
@@ -64,7 +64,7 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     let shell_port_path = dev.shell_port().map(|s| s.to_string());
 
     info!(
-        "Starting monitor for {} — debug: {}, shell: {}",
+        "Starting TUI for {} — debug: {}, shell: {}",
         dev.serial,
         debug_port_path.as_deref().unwrap_or("none"),
         shell_port_path.as_deref().unwrap_or("none"),
@@ -241,7 +241,7 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     // Restore terminal — always, regardless of success or failure
     restore_terminal();
 
-    eprintln!("Monitor session ended.");
+    eprintln!("TUI session ended.");
 
     result
 }

@@ -25,7 +25,7 @@ pub enum Action {
     Quit,
 }
 
-/// Application state for the monitor TUI.
+/// Application state for the TUI.
 pub struct App {
     /// CDC0 debug print lines (oldest first).
     pub debug_lines: Vec<String>,

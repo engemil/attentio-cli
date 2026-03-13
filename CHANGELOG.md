@@ -13,7 +13,7 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
-## [Development] (2026-03-13)
+## [Development] (2026-03-14)
 
 Added
 
@@ -54,6 +54,12 @@ Changed
   quotes; e.g., `attentio send help config` instead of `attentio send "help config"`. 
   Arguments are automatically joined with spaces. JSON output now includes a `"status"` 
   field, and non-JSON mode prints "OK" after the response.
+- **Smart argument quoting for `send` command** — arguments containing spaces are now 
+  automatically wrapped in double quotes when sent to the device. Both `"quoted"` and 
+  `'quoted'` arguments work identically (bash removes the quotes, CLI re-adds them for 
+  device shell compatibility). Examples: `attentio send echo "test this"` and 
+  `attentio send echo 'test this'` both work correctly. Includes comprehensive unit tests 
+  for the quoting logic.
 - **Renamed `monitor` command to `tui`** — the command is now invoked as `attentio tui` for 
   clarity. All documentation and internal references updated accordingly. The command still 
   provides the same functionality: TUI dashboard for monitoring CDC data streams.

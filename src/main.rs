@@ -1,6 +1,7 @@
 mod cli;
 mod device;
 mod error;
+mod json_output;
 mod tui;
 
 use anyhow::Result;

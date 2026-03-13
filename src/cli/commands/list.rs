@@ -1,32 +1,41 @@
 use anyhow::Result;
+use serde_json::json;
 
 use crate::device::discovery::{find_devices, AttentioDevice};
+use crate::json_output;
 
 /// Execute the `list` command — enumerate and display connected device(s).
 pub fn execute(json: bool) -> Result<()> {
-    let devices = find_devices()?;
-
-    if devices.is_empty() {
-        if json {
-            println!("[]");
-        } else {
-            println!("No device(s) found.");
+    match find_devices() {
+        Ok(devices) => {
+            if json {
+                print_json(&devices)?;
+            } else {
+                if devices.is_empty() {
+                    println!("No device(s) found.");
+                } else {
+                    print_table(&devices);
+                }
+            }
+            Ok(())
         }
-        return Ok(());
+        Err(e) => {
+            let err = anyhow::Error::from(e);
+            if json {
+                println!("{}", json_output::format_error(&err, json!({})));
+            } else {
+                eprintln!("Error: {:#}", err);
+            }
+            Err(err)
+        }
     }
-
-    if json {
-        print_json(&devices)?;
-    } else {
-        print_table(&devices);
-    }
-
-    Ok(())
 }
 
 fn print_json(devices: &[AttentioDevice]) -> Result<()> {
-    let output = serde_json::to_string_pretty(devices)?;
-    println!("{}", output);
+    let output = json!({
+        "data": devices,
+    });
+    println!("{}", json_output::format_success(output));
     Ok(())
 }
 

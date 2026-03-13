@@ -117,12 +117,14 @@ WARN Failed to open shell port /dev/ttyACM2: Permission denied
 
 ## Usage
 
+### Implemented Commands
+
 ```bash
-attentio list                                               # List connected devices
-attentio list --json                                        # JSON output
-attentio send <cmd> [args...] [--device <serial>]           # One-shot command (e.g., 'attentio send help')
-attentio send --json <cmd> [args...] [--device <serial>]    # One-shot with JSON output
-attentio shell [--device <serial>]                          # Interactive ChibiOS shell (serial from 'list')
+attentio list                                               # List connected devices and their serial number
+attentio --json list                                        # List connected devices with JSON output
+attentio send <cmd> [args...] [--device <serial>]           # One-shot command (supports quoted arguments)
+attentio --json send <cmd> [args...] [--device <serial>]    # One-shot with JSON output
+attentio shell [--device <serial>]                          # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
 attentio tui [--device <serial>]                            # TUI dashboard (dual CDC, auto-reconnect)
 attentio led <mode> [options]                               # LED mode/settings (planned)
 attentio settings get <key>                                 # Read setting (planned)
@@ -134,17 +136,6 @@ attentio dfu-enter                                          # Enter bootloader m
 attentio bootloader-enter                                   # Same as "dfu-enter"
 attentio completions <shell>                                # Generate shell completions (planned)
 ```
-
-### Global Flags
-
-| Flag | Description |
-|------|-------------|
-| `-d, --device <serial>` | Target device by serial number (defaults to only connected device) |
-| `--json` | Output results as JSON (currently used by `list` and `send`) |
-| `-v, --verbose` | Enable verbose/debug output |
-
-(More info will come, to show better use-case)
-
 
 ### TUI Usage
 
@@ -160,6 +151,188 @@ Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bo
 - **Up** / **Down** to recall previous commands
 - **Tab** to switch focus between debug and shell panes
 - **Esc** / **CTRL** + **C** to quit
+
+### Send Command
+
+The firmware already implements several shell commands that can be accessed using `attentio send`:
+
+```bash
+attentio send version                                       # Get firmware version
+attentio send settings get device_name                      # Read device name
+attentio send settings set device_name "My AttentioLight"   # Write device name
+attentio send dfu                                           # Enter bootloader/DFU mode
+attentio send help                                          # Show all available shell commands
+```
+
+**Note:** Dedicated CLI subcommands (`attentio settings`, `attentio led`, `attentio dfu`) are planned for future releases but firmware features are accessible now via `send`.
+
+#### Quoting Arguments
+
+The `send` command automatically handles arguments with spaces. Both double quotes (`"`) and single quotes (`'`) work identically:
+
+```bash
+# All of these work:
+attentio send echo test                                     # Single word, no quotes needed
+attentio send echo "test"                                   # Single word with quotes (quotes removed)
+attentio send echo 'test'                                   # Single word with single quotes (same as above)
+attentio send echo "test this"                              # Multi-word argument (quotes preserved)
+attentio send echo 'test this'                              # Multi-word with single quotes (same result)
+```
+
+**How it works:** When you use quotes in your shell command, bash treats the quoted text as a single argument. The CLI detects arguments containing spaces and automatically wraps them in quotes when sending to the device's shell.
+
+**Note:** Arguments with embedded quotes (e.g., `'He said "hello"'`) are escaped but may not work correctly due to limitations in the ChibiOS shell parser.
+
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `-d, --device <serial>` | Target device by serial number (defaults to only connected device) |
+| `--json` | Output results as JSON with `status` field (`OK` or `ERROR`) for scripting/automation |
+| `-v, --verbose` | Enable verbose/debug output |
+
+### JSON Output Format
+
+The `--json` flag provides structured output for scripting and automation. All commands that support `--json` use a consistent format for both success and error cases.
+
+#### Success Response
+
+All successful operations return a JSON object with `"status": "OK"` and additional fields depending on the command:
+
+**Example: `attentio --json send version`**
+```json
+{
+  "status": "OK",
+  "device": "AL1MB1-12345678",
+  "command": "version",
+  "response": "1.2.3"
+}
+```
+
+**Example: `attentio --json list`**
+```json
+{
+  "status": "OK",
+  "data": [
+    {
+      "serial": "AL1MB1-12345678",
+      "product": "AttentioLight-1",
+      "cdc0": {
+        "path": "/dev/ttyACM0",
+        "role": "debug"
+      },
+      "cdc1": {
+        "path": "/dev/ttyACM1",
+        "role": "shell"
+      }
+    }
+  ]
+}
+```
+
+#### Error Response
+
+All errors return a JSON object with `"status": "ERROR"` and error details:
+
+**Example: Device not found**
+```json
+{
+  "status": "ERROR",
+  "error": "no device(s) found",
+  "error_type": "DeviceNotFound"
+}
+```
+
+**Example: Command error with context**
+```json
+{
+  "status": "ERROR",
+  "error": "protocol error: unknown command",
+  "error_type": "Protocol",
+  "command": "badcmd",
+  "protocol_message": "unknown command"
+}
+```
+
+**Example: Multiple devices found**
+```json
+{
+  "status": "ERROR",
+  "error": "multiple devices found — use --device <serial> to select one: AL1MB1-111, AL1MB1-222",
+  "error_type": "MultipleDevices",
+  "available_devices": ["AL1MB1-111", "AL1MB1-222"]
+}
+```
+
+#### Error Types
+
+(NB! This is subject for change)
+
+The `error_type` field can be one of:
+- `DeviceNotFound` - No devices connected
+- `MultipleDevices` - Multiple devices found, need to specify `--device`
+- `DeviceSerialNotFound` - Specified serial number not found
+- `PortBusy` - Port is already open by another process
+- `Protocol` - Device returned an error or invalid response
+- `Timeout` - Command timed out waiting for response
+- `Serial` - Serial port communication error
+- `Io` - I/O error
+- `Other` - Other errors
+
+#### Parsing JSON Output
+
+**Bash/Shell:**
+```bash
+# Check if command succeeded
+if attentio --json send version | jq -e '.status == "OK"' > /dev/null; then
+    echo "Success"
+fi
+
+# Extract response
+attentio --json send version | jq -r '.response'
+
+# Handle errors
+output=$(attentio --json send badcmd)
+if echo "$output" | jq -e '.status == "ERROR"' > /dev/null; then
+    echo "Error: $(echo "$output" | jq -r '.error')"
+fi
+```
+
+**Python:**
+```python
+import subprocess
+import json
+
+result = subprocess.run(
+    ['attentio', '--json', 'send', 'version'],
+    capture_output=True,
+    text=True
+)
+
+data = json.loads(result.stdout)
+if data['status'] == 'OK':
+    print(f"Version: {data['response']}")
+else:
+    print(f"Error ({data['error_type']}): {data['error']}")
+```
+
+**Node.js:**
+```javascript
+const { execSync } = require('child_process');
+
+try {
+    const output = execSync('attentio --json send version', { encoding: 'utf8' });
+    const data = JSON.parse(output);
+    
+    if (data.status === 'OK') {
+        console.log(`Version: ${data.response}`);
+    } else {
+        console.error(`Error: ${data.error}`);
+    }
+} catch (err) {
+    console.error('Failed to execute command');
+}
+```
 
 ## License
 

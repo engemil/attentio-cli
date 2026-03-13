@@ -54,6 +54,7 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
                         if !response.is_empty() {
                             println!("{}", response);
                         }
+                        println!("OK");
                     }
                     Err(e) => {
                         eprintln!("Error: {}", e);

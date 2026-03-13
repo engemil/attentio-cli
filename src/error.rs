@@ -1,3 +1,4 @@
+use serde_json::json;
 use thiserror::Error;
 
 /// Attentio CLI error types.
@@ -35,5 +36,42 @@ impl AttentioError {
     /// Returns true if this error indicates the port is busy (held by another process).
     pub fn is_port_busy(&self) -> bool {
         matches!(self, AttentioError::PortBusy { .. })
+    }
+
+    /// Returns the error type as a string for JSON output.
+    pub fn error_type(&self) -> &str {
+        match self {
+            AttentioError::DeviceNotFound => "DeviceNotFound",
+            AttentioError::MultipleDevices { .. } => "MultipleDevices",
+            AttentioError::DeviceSerialNotFound { .. } => "DeviceSerialNotFound",
+            AttentioError::PortBusy { .. } => "PortBusy",
+            AttentioError::Serial(_) => "Serial",
+            AttentioError::Io(_) => "Io",
+            AttentioError::Protocol { .. } => "Protocol",
+            AttentioError::Timeout { .. } => "Timeout",
+            AttentioError::Other(_) => "Other",
+        }
+    }
+
+    /// Returns additional context data for JSON output.
+    pub fn context_data(&self) -> serde_json::Value {
+        match self {
+            AttentioError::MultipleDevices { serials } => json!({
+                "available_devices": serials.split(", ").collect::<Vec<_>>()
+            }),
+            AttentioError::DeviceSerialNotFound { serial } => json!({
+                "requested_serial": serial
+            }),
+            AttentioError::PortBusy { port } => json!({
+                "port": port
+            }),
+            AttentioError::Timeout { seconds } => json!({
+                "timeout_seconds": seconds
+            }),
+            AttentioError::Protocol { message } => json!({
+                "protocol_message": message
+            }),
+            _ => json!({}),
+        }
     }
 }

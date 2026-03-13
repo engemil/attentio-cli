@@ -35,8 +35,19 @@ pub enum Command {
     },
 
     /// Send a one-shot command to the device.
+    ///
+    /// Arguments containing spaces are automatically quoted when sent to the device.
+    ///
+    /// Examples:
+    ///   attentio send help
+    ///   attentio send echo test
+    ///   attentio send echo "test this"
+    ///   attentio send echo 'test this'
+    ///   attentio send led pulse red
     Send {
         /// The command to send (multiple args joined with spaces).
+        ///
+        /// Arguments with spaces are automatically quoted for the device shell.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
 

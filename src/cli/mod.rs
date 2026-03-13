@@ -36,8 +36,9 @@ pub enum Command {
 
     /// Send a one-shot command to the device.
     Send {
-        /// The command to send.
-        cmd: String,
+        /// The command to send (multiple args joined with spaces).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec<String>,
 
         /// Target device by serial number.
         #[arg(long, short)]

@@ -120,7 +120,7 @@ WARN Failed to open shell port /dev/ttyACM2: Permission denied
 ```bash
 attentio list                              # List connected devices
 attentio list --json                       # JSON output (for scripting)
-attentio send <cmd> [--device <serial>]    # One-shot command
+attentio send <cmd> [args...] [--device <serial>]    # One-shot command (e.g., 'attentio send help config')
 attentio shell [--device <serial>]         # Interactive ChibiOS shell (serial from 'list')
 attentio tui [--device <serial>]           # TUI dashboard (dual CDC, auto-reconnect)
 attentio led <mode> [options]              # LED mode/settings (planned)

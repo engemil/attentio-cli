@@ -13,7 +13,7 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
-## [Development] (2026-03-12)
+## [Development] (2026-03-13)
 
 Added
 
@@ -50,6 +50,10 @@ Added
 
 Changed
 
+- **`send` command now accepts multi-word arguments** — command arguments no longer need 
+  quotes; e.g., `attentio send help config` instead of `attentio send "help config"`. 
+  Arguments are automatically joined with spaces. JSON output now includes a `"status"` 
+  field, and non-JSON mode prints "OK" after the response.
 - **Renamed `monitor` command to `tui`** — the command is now invoked as `attentio tui` for 
   clarity. All documentation and internal references updated accordingly. The command still 
   provides the same functionality: TUI dashboard for monitoring CDC data streams.

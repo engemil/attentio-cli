@@ -118,20 +118,21 @@ WARN Failed to open shell port /dev/ttyACM2: Permission denied
 ## Usage
 
 ```bash
-attentio list                              # List connected devices
-attentio list --json                       # JSON output (for scripting)
-attentio send <cmd> [args...] [--device <serial>]    # One-shot command (e.g., 'attentio send help config')
-attentio shell [--device <serial>]         # Interactive ChibiOS shell (serial from 'list')
-attentio tui [--device <serial>]           # TUI dashboard (dual CDC, auto-reconnect)
-attentio led <mode> [options]              # LED mode/settings (planned)
-attentio settings get <key>                # Read setting (planned)
-attentio settings set <key> <value>        # Write setting (planned)
-attentio settings load <file.toml>         # Apply preset (planned)
-attentio settings save <file.toml>         # Export settings (planned)
-attentio dfu <firmware.bin>                # Enter bootloader mode and flash application firmware (planned)
-attentio dfu-enter                         # Enter bootloader mode
-attentio bootloader-enter                  # Same as "dfu-enter"
-attentio completions <shell>               # Generate shell completions (planned)
+attentio list                                               # List connected devices
+attentio list --json                                        # JSON output
+attentio send <cmd> [args...] [--device <serial>]           # One-shot command (e.g., 'attentio send help')
+attentio send --json <cmd> [args...] [--device <serial>]    # One-shot with JSON output
+attentio shell [--device <serial>]                          # Interactive ChibiOS shell (serial from 'list')
+attentio tui [--device <serial>]                            # TUI dashboard (dual CDC, auto-reconnect)
+attentio led <mode> [options]                               # LED mode/settings (planned)
+attentio settings get <key>                                 # Read setting (planned)
+attentio settings set <key> <value>                         # Write setting (planned)
+attentio settings load <file.toml>                          # Apply preset (planned)
+attentio settings save <file.toml>                          # Export settings (planned)
+attentio dfu <firmware.bin>                                 # Enter bootloader mode and flash application firmware (planned)
+attentio dfu-enter                                          # Enter bootloader mode
+attentio bootloader-enter                                   # Same as "dfu-enter"
+attentio completions <shell>                                # Generate shell completions (planned)
 ```
 
 ### Global Flags

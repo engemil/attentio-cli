@@ -75,8 +75,9 @@ pub enum Command {
 
     /// Read or write device settings.
     Settings {
+        /// Settings action (defaults to 'list' if not specified).
         #[command(subcommand)]
-        action: SettingsAction,
+        action: Option<SettingsAction>,
     },
 
     /// Flash firmware via DFU.
@@ -98,6 +99,9 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum SettingsAction {
+    /// List all settings (default action).
+    List,
+
     /// Read a setting value.
     Get {
         /// Setting key to read.
@@ -113,15 +117,15 @@ pub enum SettingsAction {
         value: String,
     },
 
-    /// Apply settings from a TOML preset file.
+    /// Apply settings from a JSON preset file.
     Load {
-        /// Path to TOML preset file.
+        /// Path to JSON preset file.
         file: String,
     },
 
-    /// Export current settings to a TOML file.
+    /// Export current settings to a JSON file.
     Save {
-        /// Path to output TOML file.
+        /// Path to output JSON file.
         file: String,
     },
 }

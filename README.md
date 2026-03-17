@@ -126,12 +126,14 @@ attentio send <cmd> [args...] [--device <serial>]           # One-shot command (
 attentio --json send <cmd> [args...] [--device <serial>]    # One-shot with JSON output
 attentio shell [--device <serial>]                          # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
 attentio tui [--device <serial>]                            # TUI dashboard (dual CDC, auto-reconnect)
-attentio led <mode> [options]                               # LED mode/settings (planned)
-attentio settings get <key>                                 # Read setting (planned)
-attentio settings set <key> <value>                         # Write setting (planned)
-attentio settings load <file.toml>                          # Apply preset (planned)
-attentio settings save <file.toml>                          # Export settings (planned)
-attentio dfu <firmware.bin>                                 # Enter bootloader mode and flash application firmware (planned)
+attentio led <mode> [options]                               # LED mode/settings (TO DO: planned)
+attentio settings                                           # List all settings (defaults to list)
+attentio settings list                                      # List all settings
+attentio settings get <key>                                 # Read setting
+attentio settings set <key> <value>                         # Write setting
+attentio settings load <file.json>                          # Apply preset from JSON file
+attentio settings save <file.json>                          # Export settings to JSON file
+attentio dfu <firmware.bin>                                 # Enter bootloader mode and flash application firmware (TO DO: planned)
 attentio dfu-enter                                          # Enter bootloader mode
 attentio bootloader-enter                                   # Same as "dfu-enter"
 attentio completions <shell>                                # Generate shell completions (planned)
@@ -152,21 +154,8 @@ Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bo
 - **Tab** to switch focus between debug and shell panes
 - **Esc** / **CTRL** + **C** to quit
 
-### Send Command
 
-The firmware already implements several shell commands that can be accessed using `attentio send`:
-
-```bash
-attentio send version                                       # Get firmware version
-attentio send settings get device_name                      # Read device name
-attentio send settings set device_name "My AttentioLight"   # Write device name
-attentio send dfu                                           # Enter bootloader/DFU mode
-attentio send help                                          # Show all available shell commands
-```
-
-**Note:** Dedicated CLI subcommands (`attentio settings`, `attentio led`, `attentio dfu`) are planned for future releases but firmware features are accessible now via `send`.
-
-#### Quoting Arguments
+### Quoting Arguments
 
 The `send` command automatically handles arguments with spaces. Both double quotes (`"`) and single quotes (`'`) work identically:
 
@@ -333,6 +322,7 @@ try {
     console.error('Failed to execute command');
 }
 ```
+
 
 ## License
 

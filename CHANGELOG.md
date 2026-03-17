@@ -13,7 +13,7 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
-## [Development] (2026-03-14)
+## [Development] (2026-03-17)
 
 Added
 
@@ -47,6 +47,13 @@ Added
   - Clean terminal restore on exit (Esc/Ctrl+C).
 - **TUI module** (`src/tui/`) with separated concerns: `app.rs` (state), `ui.rs` (rendering), `event.rs` (input handling).
 - New dependencies: `ratatui`, `crossterm` (with event-stream).
+- **Settings management commands** — fully implemented `settings` command with five operations:
+  - `settings` or `settings list` — lists all device settings in table or JSON format
+  - `settings get <key>` — reads a single setting value
+  - `settings set <key> <value>` — writes a setting (auto-quotes values with spaces)
+  - `settings save <file.json>` — exports all current settings to JSON preset file
+  - `settings load <file.json>` — imports and applies settings from JSON preset file with smart handling (skips read-only fields, continues on partial failures, reports detailed status)
+- **JSON preset format** for settings.
 
 Changed
 

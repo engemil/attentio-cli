@@ -32,8 +32,9 @@ pub async fn execute(
 
 /// List all settings from the device.
 async fn execute_list(device: Option<&str>, json: bool) -> Result<()> {
-    // Connect to device
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
     let port_path = dev
         .shell_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
@@ -43,38 +44,27 @@ async fn execute_list(device: Option<&str>, json: bool) -> Result<()> {
     let mut conn = DeviceConnection::open(port_path)
         .context(format!("failed to open serial port {}", port_path))?;
 
-    // Send settings command (firmware supports both "settings" and "settings list")
     let response = conn
         .send_command("settings")
         .await
         .context("failed to list settings")?;
 
-    // Parse response
-    // Note: send_command() already strips the "OK" terminator, so we just get payload lines
-    let lines: Vec<&str> = response.lines().collect();
-
     // Parse key=value lines
+    let lines: Vec<&str> = response.lines().collect();
     let mut settings = Vec::new();
     for line in lines {
         if let Some((key, value)) = line.split_once('=') {
-            // Determine access level based on known read-only fields
-            // Note: This is temporary - in the future, firmware could include access level
-            let access = if key == "serial_number" { "ro" } else { "rw" };
-
-            settings.push((key.to_string(), value.to_string(), access));
+            settings.push((key.to_string(), value.to_string()));
         }
     }
 
-    // Output
     if json {
-        // JSON format with metadata
         let json_settings: Vec<_> = settings
             .iter()
-            .map(|(key, value, access)| {
+            .map(|(key, value)| {
                 json!({
                     "key": key,
-                    "value": value,
-                    "access": access
+                    "value": value
                 })
             })
             .collect();
@@ -86,14 +76,12 @@ async fn execute_list(device: Option<&str>, json: bool) -> Result<()> {
 
         println!("{}", json_output::format_success(output));
     } else {
-        // Human-readable table format
         println!("Settings:");
-        println!("  {:<20} {:<10} {}", "Key", "Access", "Value");
-        println!("  {:-<20} {:-<10} {:-<30}", "", "", "");
+        println!("  {:<20} {}", "Key", "Value");
+        println!("  {:-<20} {:-<30}", "", "");
 
-        for (key, value, access) in settings.iter() {
-            let access_str = if *access == "ro" { "RO" } else { "RW" };
-            println!("  {:<20} {:<10} {}", key, access_str, value);
+        for (key, value) in settings.iter() {
+            println!("  {:<20} {}", key, value);
         }
 
         println!("\nTotal: {} settings", settings.len());
@@ -104,7 +92,9 @@ async fn execute_list(device: Option<&str>, json: bool) -> Result<()> {
 
 /// Get a specific setting value.
 async fn execute_get(key: &str, device: Option<&str>, json: bool) -> Result<()> {
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
     let port_path = dev
         .shell_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
@@ -120,7 +110,6 @@ async fn execute_get(key: &str, device: Option<&str>, json: bool) -> Result<()> 
         .await
         .context(format!("failed to get setting '{}'", key))?;
 
-    // send_command() already strips "OK", so response is just the value
     let value = response.trim();
 
     if json {
@@ -137,7 +126,9 @@ async fn execute_get(key: &str, device: Option<&str>, json: bool) -> Result<()> 
 
 /// Set a specific setting value.
 async fn execute_set(key: &str, value: &str, device: Option<&str>, json: bool) -> Result<()> {
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
     let port_path = dev
         .shell_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
@@ -160,8 +151,6 @@ async fn execute_set(key: &str, value: &str, device: Option<&str>, json: bool) -
         .await
         .context(format!("failed to set setting '{}'", key))?;
 
-    // send_command() returns empty string for commands that only return "OK"
-    // If we got here without error, the command succeeded
     if json {
         let data = json!({
             "key": key,
@@ -170,14 +159,16 @@ async fn execute_set(key: &str, value: &str, device: Option<&str>, json: bool) -
         });
         println!("{}", json_output::format_success(data));
     } else {
-        println!("✓ Setting '{}' set to '{}'", key, value);
+        println!("Setting '{}' set to '{}'", key, value);
     }
     Ok(())
 }
 
 /// Save all settings to a JSON preset file.
 async fn execute_save(file: &str, device: Option<&str>, json_output_flag: bool) -> Result<()> {
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
     let port_path = dev
         .shell_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
@@ -187,37 +178,27 @@ async fn execute_save(file: &str, device: Option<&str>, json_output_flag: bool) 
     let mut conn = DeviceConnection::open(port_path)
         .context(format!("failed to open serial port {}", port_path))?;
 
-    // Get list of all settings
     let response = conn
         .send_command("settings")
         .await
         .context("failed to list settings")?;
 
-    // send_command() already strips "OK", so we just get payload lines
     let lines: Vec<&str> = response.lines().collect();
-
-    // Parse settings
     let mut settings_array = Vec::new();
 
     for line in lines {
         if let Some((key, value)) = line.split_once('=') {
-            // Determine access level (temporary hardcoded logic)
-            let access = if key == "serial_number" { "ro" } else { "rw" };
-
             settings_array.push(json!({
                 "key": key,
-                "value": value,
-                "access": access
+                "value": value
             }));
         }
     }
 
-    // Build JSON document
     let json_doc = json!({
         "settings": settings_array
     });
 
-    // Write to file with pretty printing
     let json_string = serde_json::to_string_pretty(&json_doc)?;
     fs::write(file, json_string).context(format!("failed to write preset file '{}'", file))?;
 
@@ -228,7 +209,7 @@ async fn execute_save(file: &str, device: Option<&str>, json_output_flag: bool) 
         });
         println!("{}", json_output::format_success(data));
     } else {
-        println!("✓ Saved {} settings to '{}'", settings_array.len(), file);
+        println!("Saved {} settings to '{}'", settings_array.len(), file);
     }
 
     Ok(())
@@ -247,7 +228,9 @@ async fn execute_load(file: &str, device: Option<&str>, json_output_flag: bool) 
         .ok_or_else(|| anyhow::anyhow!("JSON file must contain 'settings' array"))?;
 
     // 2. Connect to device
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
     let port_path = dev
         .shell_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
@@ -260,7 +243,6 @@ async fn execute_load(file: &str, device: Option<&str>, json_output_flag: bool) 
     // 3. Apply each setting
     let mut successes = Vec::new();
     let mut failures = Vec::new();
-    let mut skipped = Vec::new();
 
     for setting_obj in settings_array {
         let key = setting_obj["key"]
@@ -271,13 +253,7 @@ async fn execute_load(file: &str, device: Option<&str>, json_output_flag: bool) 
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Setting '{}' missing 'value' field", key))?;
 
-        let access = setting_obj["access"].as_str().unwrap_or("rw");
-
-        // Skip read-only settings
-        if access == "ro" {
-            skipped.push((key.to_string(), "read-only".to_string()));
-            continue;
-        }
+        // Ignore legacy "access" field if present — all settings are writable
 
         // Quote value if needed
         let formatted_value = if value.contains(' ') {
@@ -289,8 +265,6 @@ async fn execute_load(file: &str, device: Option<&str>, json_output_flag: bool) 
         let cmd = format!("settings set {} {}", key, formatted_value);
         match conn.send_command(&cmd).await {
             Ok(_response) => {
-                // send_command() already validated the "OK" response
-                // If we got here, the command succeeded
                 successes.push((key.to_string(), value.to_string()));
             }
             Err(e) => {
@@ -305,29 +279,23 @@ async fn execute_load(file: &str, device: Option<&str>, json_output_flag: bool) 
             "file": file,
             "successes": successes.len(),
             "failures": failures.len(),
-            "skipped": skipped.len(),
             "details": {
                 "successes": successes,
-                "failures": failures,
-                "skipped": skipped
+                "failures": failures
             }
         });
         println!("{}", json_output::format_success(data));
     } else {
         println!("Loaded settings from '{}'", file);
-        println!("  ✓ {} succeeded", successes.len());
-        if !skipped.is_empty() {
-            println!("  - {} skipped (read-only)", skipped.len());
-        }
+        println!("  {} succeeded", successes.len());
         if !failures.is_empty() {
-            println!("  ✗ {} failed", failures.len());
+            println!("  {} failed", failures.len());
             for (key, error) in &failures {
                 eprintln!("    - '{}': {}", key, error);
             }
         }
     }
 
-    // Return error if any failed
     if !failures.is_empty() {
         Err(anyhow::anyhow!("Some settings failed to apply"))
     } else {

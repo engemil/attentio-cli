@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Command::List => {
-            cli::commands::list::execute(cli.json)?;
+            cli::commands::list::execute(cli.json).await?;
         }
 
         Command::Send { cmd, device } => {
@@ -54,16 +54,22 @@ async fn main() -> Result<()> {
             cli::commands::led::execute(mode, options, global_device, cli.json).await?;
         }
 
+        Command::Metadata { action } => {
+            cli::commands::metadata::execute(action, global_device, cli.json).await?;
+        }
+
         Command::Settings { action } => {
             cli::commands::settings::execute(action, global_device, cli.json).await?;
         }
 
-        Command::Dfu { firmware } => {
-            cli::commands::dfu::execute(firmware).await?;
+        Command::Dfu { firmware, device } => {
+            let device = device.as_deref().or(global_device);
+            cli::commands::dfu::execute(firmware, device, cli.json).await?;
         }
 
-        Command::DfuEnter => {
-            cli::commands::dfu::execute_enter(global_device).await?;
+        Command::DfuEnter { device } => {
+            let device = device.as_deref().or(global_device);
+            cli::commands::dfu::execute_enter(device, cli.json).await?;
         }
 
         Command::Completions { shell } => {

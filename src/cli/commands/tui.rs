@@ -58,7 +58,9 @@ fn restore_terminal() {
 /// a background task retries every few seconds until the port becomes available.
 pub async fn execute(device: Option<&str>) -> Result<()> {
     // Resolve which device to talk to
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
 
     let debug_port_path = dev.debug_port().map(|s| s.to_string());
     let shell_port_path = dev.shell_port().map(|s| s.to_string());
@@ -232,9 +234,17 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     // Always clean up: signal the terminal polling thread to stop, abort async tasks.
     // This runs whether the TUI launched successfully or failed at setup.
     shutdown.store(true, Ordering::Relaxed);
-    for handle in &task_handles {
+
+    // Abort each async task and then await it so the tokio runtime actually
+    // drives the cancellation future to completion and drops the DeviceConnection
+    // (which clears TIOCEXCL). Without awaiting, the fd may still be open when
+    // the next command runs its /proc busy-check.
+    for handle in task_handles {
         handle.abort();
+        // Ignore JoinError — an aborted task always returns Err(JoinError::Cancelled)
+        let _ = tokio::time::timeout(Duration::from_millis(500), handle).await;
     }
+
     // Wait briefly for the polling thread to notice the shutdown flag
     let _ = tokio::time::timeout(Duration::from_millis(200), term_handle).await;
 

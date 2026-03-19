@@ -13,10 +13,32 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
-## [Development] (2026-03-17)
+## [Development] (2026-03-19)
 
 Added
 
+- **DFU firmware flashing (`dfu <firmware.bin>`)** — full implementation with:
+  - Firmware header validation (magic, VID/PID, size checks)
+  - Auto-enters bootloader mode if device is running normal application
+  - Progress bars for erase and flash phases (spinner + percentage)
+  - Post-flash verification (waits for device to reboot into normal mode)
+  - USB device reset and retry logic for stale DFU state recovery
+- **`dfu-enter` command implementation** — sends `dfu` shell command to reboot device into
+  bootloader mode, then polls until DFU device re-enumerates on USB.
+- **`metadata` command** — read-only device identity and build information:
+  - `metadata` or `metadata list` — lists all metadata fields
+  - `metadata get <key>` — reads a specific metadata field value
+- **Device mode detection** — distinguishes Normal (application) vs Bootloader (DFU) mode.
+  The `list` command now shows a STATUS column indicating the device's operational mode.
+- **USB location in device discovery** — `list` output now includes USB bus/device location
+  (e.g., "Bus 001 Device 060") for physical identification when multiple devices are connected.
+- **Pure DFU device detection via `rusb`** — devices in bootloader mode without serial ports
+  are now detected directly via USB enumeration, not just serial port discovery.
+- **Device type vs device name** — `list` output now distinguishes between USB product string
+  (DEVICE TYPE, e.g., "AttentioLight-1") and user-assigned name (DEVICE NAME from settings).
+- **Shell synchronization** — new `sync_shell()` method waits for USB CDC link to stabilize,
+  drains stale buffer data, and detects the ChibiOS shell prompt before sending commands.
+- New dependencies: `rusb` (USB enumeration), `dfu-libusb` (DFU flashing), `indicatif` (progress bars).
 - **Command alias `bootloader-enter` for `dfu-enter`** — both commands now work interchangeably 
   to enter DFU bootloader mode. The alias is visible in help output for better discoverability.
 - **Auto-reconnection for TUI** — both CDC0 (debug) and CDC1 (shell) ports now
@@ -57,6 +79,15 @@ Added
 
 Changed
 
+- **`list` command output reorganized** — new columns: DEVICE TYPE (USB product string),
+  DEVICE NAME (user-assigned), STATUS (Normal/Bootloader), USB LOCATION. The previous
+  "TYPE" column (dual/single CDC) is removed.
+- **udev rules updated** — added `ENV{ID_MM_DEVICE_IGNORE}="1"` to prevent ModemManager
+  from probing Attentio devices and interfering with serial communication.
+- **`resolve_device()` is now async** — device resolution now queries metadata and settings
+  from normal-mode devices to populate serial number and device name fields.
+- **Clean port release on exit** — `DeviceConnection` drop clears `TIOCEXCL` via `TIOCNXCL`
+  before close, ensuring the port is immediately available to the next opener.
 - **`send` command now accepts multi-word arguments** — command arguments no longer need 
   quotes; e.g., `attentio send help config` instead of `attentio send "help config"`. 
   Arguments are automatically joined with spaces. JSON output now includes a `"status"` 

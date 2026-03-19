@@ -120,21 +120,23 @@ WARN Failed to open shell port /dev/ttyACM2: Permission denied
 ### Implemented Commands
 
 ```bash
-attentio list                                               # List connected devices and their serial number
+attentio list                                               # List connected devices (serial, type, status, ports/USB)
 attentio --json list                                        # List connected devices with JSON output
 attentio send <cmd> [args...] [--device <serial>]           # One-shot command (supports quoted arguments)
 attentio --json send <cmd> [args...] [--device <serial>]    # One-shot with JSON output
 attentio shell [--device <serial>]                          # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
 attentio tui [--device <serial>]                            # TUI dashboard (dual CDC, auto-reconnect)
-attentio led <mode> [options]                               # LED mode/settings (TO DO: planned)
+attentio led <mode> [options]                               # LED mode/settings (planned)
+attentio metadata                                           # List all device metadata (read-only identity/build info)
+attentio metadata get <key>                                 # Read a specific metadata field
 attentio settings                                           # List all settings (defaults to list)
 attentio settings list                                      # List all settings
 attentio settings get <key>                                 # Read setting
 attentio settings set <key> <value>                         # Write setting
 attentio settings load <file.json>                          # Apply preset from JSON file
 attentio settings save <file.json>                          # Export settings to JSON file
-attentio dfu <firmware.bin>                                 # Enter bootloader mode and flash application firmware (TO DO: planned)
-attentio dfu-enter                                          # Enter bootloader mode
+attentio dfu <firmware.bin>                                 # Flash firmware via DFU (auto-enters bootloader if needed)
+attentio dfu-enter                                          # Enter DFU bootloader mode
 attentio bootloader-enter                                   # Same as "dfu-enter"
 attentio completions <shell>                                # Generate shell completions (planned)
 ```
@@ -205,17 +207,63 @@ All successful operations return a JSON object with `"status": "OK"` and additio
   "data": [
     {
       "serial": "AL1MB1-12345678",
-      "product": "AttentioLight-1",
+      "device_type": "AttentioLight-1",
+      "device_name": "My Device",
+      "mode": "Normal",
+      "usb_location": "Bus 001 Device 060",
       "cdc0": {
         "path": "/dev/ttyACM0",
-        "role": "debug"
+        "role": "DebugPrints"
       },
       "cdc1": {
         "path": "/dev/ttyACM1",
-        "role": "shell"
+        "role": "Shell"
       }
     }
   ]
+}
+```
+
+**Example: Device in bootloader mode**
+```json
+{
+  "status": "OK",
+  "data": [
+    {
+      "serial": "unknown",
+      "device_type": "EngEmil.io Bootloader",
+      "device_name": null,
+      "mode": "Bootloader",
+      "usb_location": "Bus 001 Device 061",
+      "single_cdc": {
+        "path": "/dev/ttyACM0",
+        "role": "Single"
+      }
+    }
+  ]
+}
+```
+
+**Example: `attentio --json metadata`**
+```json
+{
+  "status": "OK",
+  "metadata": [
+    { "key": "serial_number", "value": "AL1MB1-12345678" },
+    { "key": "hw_version", "value": "1.0" },
+    { "key": "fw_version", "value": "1.2.3" }
+  ],
+  "count": 3
+}
+```
+
+**Example: `attentio --json dfu firmware.bin`**
+```json
+{
+  "status": "OK",
+  "action": "dfu",
+  "firmware": "firmware.bin",
+  "message": "Firmware flashed successfully"
 }
 ```
 

@@ -1,7 +1,7 @@
 use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::io::FromRawFd;
+use std::os::unix::io::{FromRawFd, RawFd};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -13,7 +13,7 @@ use crate::error::AttentioError;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Hard timeout for the entire `send_command()` response.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Inter-line timeout: if we've received at least one response line and no
 /// more data arrives within this window, the response is considered complete.
@@ -23,9 +23,25 @@ const INTER_LINE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// An async connection to a device over a serial port.
 pub struct DeviceConnection {
+    /// Raw file descriptor — retained so Drop can clear TIOCEXCL before close.
+    fd: RawFd,
     reader: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
     writer: tokio::io::WriteHalf<tokio_serial::SerialStream>,
     timeout: Duration,
+}
+
+impl Drop for DeviceConnection {
+    fn drop(&mut self) {
+        // Clear exclusive mode so the port is immediately available to the next
+        // opener. The kernel releases TIOCEXCL on close() anyway, but doing it
+        // explicitly here means the port is unlocked before the fd is fully
+        // torn down by the tokio/serialport layers — avoiding a brief window
+        // where check_port_in_use() (via /proc scan) would still see it as open.
+        unsafe {
+            libc::ioctl(self.fd, libc::TIOCNXCL);
+        }
+        debug!("Serial port released (TIOCNXCL cleared)");
+    }
 }
 
 impl DeviceConnection {
@@ -38,10 +54,11 @@ impl DeviceConnection {
     pub fn open(port_path: &str) -> Result<Self, AttentioError> {
         debug!("Opening serial port: {}", port_path);
 
-        let port = open_serial(port_path)?;
+        let (fd, port) = open_serial(port_path)?;
         let (read_half, write_half) = tokio::io::split(port);
 
         Ok(Self {
+            fd,
             reader: BufReader::new(read_half),
             writer: write_half,
             timeout: DEFAULT_TIMEOUT,
@@ -197,7 +214,7 @@ impl DeviceConnection {
         // Then, try a very short non-blocking read to discard any data that
         // has arrived in the OS buffer but isn't yet in the BufReader.
         let mut discard = [0u8; 512];
-        let _ = tokio::time::timeout(Duration::from_millis(5), async {
+        let _ = tokio::time::timeout(Duration::from_millis(30), async {
             loop {
                 match self.reader.read(&mut discard).await {
                     Ok(0) | Err(_) => break,
@@ -235,6 +252,101 @@ impl DeviceConnection {
             Err(_) => Err(AttentioError::Timeout {
                 seconds: self.timeout.as_secs(),
             }),
+        }
+    }
+
+    /// Synchronise with the device shell.
+    ///
+    /// Waits briefly for the USB CDC link to stabilise after open, then sends
+    /// a bare `\r\n` and reads raw bytes until the shell prompt suffix (`> `)
+    /// appears.  This confirms that the firmware's shell is alive and ready to
+    /// accept a real command, and also drains any stale data that may be
+    /// sitting in the buffer (boot messages, partial prompts, etc.).
+    ///
+    /// Uses byte-level reads instead of `read_line` because the ChibiOS
+    /// prompt (`attentio> `) is **not** newline-terminated — `read_line`
+    /// would block forever waiting for a `\n` that never comes.
+    ///
+    /// On timeout the error is propagated — the caller can retry.
+    pub async fn sync_shell(&mut self) -> Result<(), AttentioError> {
+        const STABILISE_DELAY: Duration = Duration::from_millis(50);
+        const SYNC_TIMEOUT: Duration = Duration::from_millis(500);
+
+        // Brief delay so the CDC ACM link is up and the firmware has asserted DTR.
+        tokio::time::sleep(STABILISE_DELAY).await;
+
+        // Drain anything already in the buffer (boot banner, old prompt, …).
+        self.drain_pending().await;
+
+        // Send a bare newline — the shell will echo it back and re-print its
+        // prompt (e.g. "attentio> ").
+        self.writer
+            .write_all(b"\r\n")
+            .await
+            .map_err(AttentioError::Io)?;
+        self.writer.flush().await.map_err(AttentioError::Io)?;
+
+        trace!("Sync: sent probe, waiting for shell prompt...");
+
+        // Read raw bytes and accumulate until we see the prompt suffix "> ".
+        // We keep a small tail buffer — only the last few bytes matter for
+        // matching, so we don't need to accumulate everything.
+        let mut buf = [0u8; 128];
+        let mut tail = Vec::with_capacity(64);
+
+        let start = Instant::now();
+        loop {
+            let remaining = SYNC_TIMEOUT
+                .checked_sub(start.elapsed())
+                .unwrap_or_default();
+            if remaining.is_zero() {
+                debug!(
+                    "Sync: timed out waiting for shell prompt (received so far: {:?})",
+                    String::from_utf8_lossy(&tail)
+                );
+                return Err(AttentioError::Timeout {
+                    seconds: 0, // sub-second, but we reuse the variant
+                });
+            }
+
+            let read_result = tokio::time::timeout(remaining, async {
+                self.reader.read(&mut buf).await.map_err(AttentioError::Io)
+            })
+            .await;
+
+            match read_result {
+                Ok(Ok(0)) => {
+                    return Err(AttentioError::Protocol {
+                        message: "connection closed during sync".to_string(),
+                    });
+                }
+                Ok(Ok(n)) => {
+                    trace!(
+                        "Sync: received {} bytes: {:?}",
+                        n,
+                        String::from_utf8_lossy(&buf[..n])
+                    );
+                    tail.extend_from_slice(&buf[..n]);
+
+                    // Check if the accumulated data ends with "> " (prompt).
+                    if tail.ends_with(b"> ") {
+                        debug!("Sync: shell prompt detected");
+                        // Drain the prompt from the BufReader so send_command
+                        // starts with a clean slate (the BufReader may have
+                        // buffered more bytes than we consumed via `read`).
+                        self.drain_pending().await;
+                        return Ok(());
+                    }
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    debug!(
+                        "Sync: timed out waiting for shell prompt (received so far: {:?})",
+                        String::from_utf8_lossy(&tail)
+                    );
+                    return Err(AttentioError::Timeout { seconds: 0 });
+                }
+            }
         }
     }
 
@@ -341,7 +453,10 @@ fn check_port_in_use(port_path: &str) -> Result<(), AttentioError> {
 ///   2. Open the fd via `libc::open()`
 ///   3. Claim `TIOCEXCL` (forward protection against new openers)
 ///   4. Configure termios and build async stream
-fn open_serial(port_path: &str) -> Result<tokio_serial::SerialStream, AttentioError> {
+///
+/// Returns both the raw fd and the async stream. The caller stores the fd in
+/// `DeviceConnection` so `Drop` can call `TIOCNXCL` before the fd is closed.
+fn open_serial(port_path: &str) -> Result<(RawFd, tokio_serial::SerialStream), AttentioError> {
     // Step 1: Check if another process already has the port open.
     check_port_in_use(port_path)?;
 
@@ -361,6 +476,14 @@ fn open_serial(port_path: &str) -> Result<tokio_serial::SerialStream, AttentioEr
     };
     if fd < 0 {
         let err = std::io::Error::last_os_error();
+        // EBUSY means TIOCEXCL is set on the TTY — the kernel ACM driver holds
+        // exclusive access (e.g. during device initialisation). Map this to
+        // PortBusy so callers treat it the same as "another process has it open".
+        if err.raw_os_error() == Some(libc::EBUSY) {
+            return Err(AttentioError::PortBusy {
+                port: port_path.to_string(),
+            });
+        }
         return Err(AttentioError::Other(format!(
             "failed to open {}: {}",
             port_path, err
@@ -381,7 +504,7 @@ fn open_serial(port_path: &str) -> Result<tokio_serial::SerialStream, AttentioEr
     if result.is_err() {
         unsafe { libc::close(fd) };
     }
-    result
+    result.map(|stream| (fd, stream))
 }
 
 /// Configure termios on an open fd and convert it to an async SerialStream.

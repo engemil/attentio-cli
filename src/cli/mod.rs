@@ -73,6 +73,13 @@ pub enum Command {
         options: Vec<String>,
     },
 
+    /// Read device metadata (read-only identity and build info).
+    Metadata {
+        /// Metadata action (defaults to 'list' if not specified).
+        #[command(subcommand)]
+        action: Option<MetadataAction>,
+    },
+
     /// Read or write device settings.
     Settings {
         /// Settings action (defaults to 'list' if not specified).
@@ -84,16 +91,36 @@ pub enum Command {
     Dfu {
         /// Path to firmware binary file.
         firmware: String,
+
+        /// Target device by serial number.
+        #[arg(long, short)]
+        device: Option<String>,
     },
 
     /// Enter DFU bootloader mode on the device.
     #[command(visible_alias = "bootloader-enter")]
-    DfuEnter,
+    DfuEnter {
+        /// Target device by serial number.
+        #[arg(long, short)]
+        device: Option<String>,
+    },
 
     /// Generate shell completions.
     Completions {
         /// Target shell (bash, zsh, fish, powershell).
         shell: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MetadataAction {
+    /// List all metadata fields (default action).
+    List,
+
+    /// Read a metadata field value.
+    Get {
+        /// Metadata field key to read.
+        key: String,
     },
 }
 

@@ -11,7 +11,9 @@ use crate::device::discovery::resolve_device;
 /// and prints the response. Type `exit`, `quit`, or Ctrl+D to disconnect.
 pub async fn execute(device: Option<&str>) -> Result<()> {
     // Resolve which device to talk to
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
     let port_path = dev
         .shell_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;

@@ -64,7 +64,9 @@ pub async fn execute(cmd: &[String], device: Option<&str>, json: bool) -> Result
 /// Internal implementation that returns result data.
 async fn execute_internal(cmd_str: &str, device: Option<&str>) -> Result<(String, String)> {
     // Resolve which device to talk to
-    let dev = resolve_device(device).context("failed to resolve device")?;
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
     let port_path = dev
         .shell_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;

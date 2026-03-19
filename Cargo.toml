@@ -20,6 +20,15 @@ tokio-serial = "5"
 # Serial port enumeration
 serialport = "4"
 
+# USB device enumeration (for DFU mode detection)
+rusb = "0.9"
+
+# DFU firmware flashing
+dfu-libusb = "0.5"
+
+# Progress bar (DFU flashing)
+indicatif = "0.17"
+
 # Low-level POSIX (already a transitive dep; used for non-exclusive serial port open)
 libc = "0.2"
 

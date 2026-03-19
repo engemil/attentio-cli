@@ -135,11 +135,11 @@ pub async fn execute_enter(device: Option<&str>, json: bool) -> Result<()> {
                 let output = json!({
                     "device": serial,
                     "action": "dfu-enter",
-                    "message": "Device entered DFU bootloader mode",
+                    "message": "Device entered bootloader (DFU) mode",
                 });
                 println!("{}", json_output::format_success(output));
             } else {
-                println!("Device '{}' entered DFU bootloader mode.", serial);
+                println!("Device '{}' entered bootloader (DFU) mode.", serial);
             }
             Ok(())
         }
@@ -212,7 +212,7 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     drop(conn);
 
     // Wait for the device to re-enumerate in bootloader mode.
-    eprintln!("Waiting for device to enter bootloader mode...");
+    eprintln!("Waiting for device to enter bootloader (DFU) mode...");
     tokio::time::sleep(POST_REBOOT_DELAY).await;
 
     wait_for_dfu_device().await?;

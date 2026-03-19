@@ -129,20 +129,6 @@ Changed
 - Commented out unused port mappings in `.devcontainer/docker-compose.yml`.
 - Removed `#[allow(dead_code)]` from `debug_port()`, `read_line()`, and `with_timeout()` — now used by TUI.
 - Updated README implementation status: TUI command marked as Done.
-
-Fixed
-
-- **JSON error output with `--json` flag** — errors from all commands are now properly 
-  formatted as JSON when `--json` is set. Previously, errors propagated to the default 
-  handler and printed in human-readable format even with `--json`. Centralized error 
-  handling in `main.rs` ensures consistent `{"status": "ERROR", ...}` output.
-
----
-
-## [Development] (2026-03-03)
-
-Added
-
 - **CLI framework** with clap (derive) supporting subcommands: `list`, `send`, `shell`, `monitor`, `led`, `settings`, `dfu`, `dfu-enter`, and `completions`.
 - **Global flags**: `--device <serial>`, `--json`, and `--verbose`.
 - **Device discovery** module for enumerating and selecting connected AttentioLight-1 devices via serial ports.
@@ -156,12 +142,15 @@ Added
 - **README** with full CLI usage reference, implementation status table, setup instructions for Linux/macOS/Windows, and build/install commands.
 - **udev rules script** (`scripts/udev_rules_attentio.sh`) for Linux USB device access.
 - Future plan items: unit tests for discovery logic and CI/CD pipeline.
-
-Changed
-
 - Expanded README from placeholder to full documentation.
 - Updated `docs/PLAN.md` with future items (unit tests, CI/CD).
 
 Fixed
 
+- **JSON error output with `--json` flag** — errors from all commands are now properly 
+  formatted as JSON when `--json` is set. Previously, errors propagated to the default 
+  handler and printed in human-readable format even with `--json`. Centralized error 
+  handling in `main.rs` ensures consistent `{"status": "ERROR", ...}` output.
+
 - Fixed typo in udev script filename (`udev_rules_attetio.sh` → `udev_rules_attentio.sh`).
+

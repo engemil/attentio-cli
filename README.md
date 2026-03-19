@@ -132,23 +132,23 @@ Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bo
 ### Commands
 
 ```bash
-attentio [--json] list                                        # List connected devices (serial, type, status, ports/USB)
-attentio [--json] send <cmd> [args...] [--device <serial>]    # One-shot command (supports quoted arguments)
-attentio led <mode> [options]                                 # LED mode/settings (planned)
-attentio [--json] metadata                                    # List all device metadata (read-only identity/build info)
-attentio [--json] metadata get <key>                          # Read a specific metadata field
-attentio [--json] settings                                    # List all settings (defaults to list)
-attentio [--json] settings list                               # List all settings
-attentio [--json] settings get <key>                          # Read setting
-attentio [--json] settings set <key> <value>                  # Write setting
-attentio [--json] settings load <file.json>                   # Apply preset from JSON file
-attentio [--json] settings save <file.json>                   # Export settings to JSON file
-attentio shell [--device <serial>]                            # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
-attentio tui [--device <serial>]                              # TUI dashboard (dual CDC, auto-reconnect)
-attentio dfu <firmware.bin>                                   # Flash firmware via DFU (auto-enters bootloader if needed)
-attentio dfu-enter                                            # Enter DFU bootloader mode
-attentio bootloader-enter                                     # Same as "dfu-enter"
-attentio completions <shell>                                  # Generate shell completions (planned)
+attentio [--json] list                                              # List connected devices (serial, type, status, ports/USB)
+attentio [--json] send <cmd> [args...] [--device <serial>]          # One-shot command (supports quoted arguments)
+attentio led <mode> [options] [--device <serial>]                   # LED mode/settings (planned)
+attentio [--json] metadata [--device <serial>]                      # List all device metadata (read-only identity/build info)
+attentio [--json] metadata get <key> [--device <serial>]            # Read a specific metadata field
+attentio [--json] settings [--device <serial>]                      # List all settings (defaults to list)
+attentio [--json] settings list [--device <serial>]                 # List all settings
+attentio [--json] settings get <key> [--device <serial>]            # Read setting
+attentio [--json] settings set <key> <value> [--device <serial>]    # Write setting
+attentio [--json] settings load <file.json> [--device <serial>]     # Apply preset from JSON file
+attentio [--json] settings save <file.json> [--device <serial>]     # Export settings to JSON file
+attentio shell [--device <serial>]                                  # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
+attentio tui [--device <serial>]                                    # TUI dashboard (dual CDC, auto-reconnect)
+attentio dfu <firmware.bin> [--device <serial>]                     # Flash firmware via DFU (auto-enters bootloader if needed)
+attentio dfu-enter [--device <serial>]                              # Enter DFU bootloader mode
+attentio bootloader-enter [--device <serial>]                       # Same as "dfu-enter"
+attentio completions <shell> [--device <serial>]                    # Generate shell completions (planned)
 ```
 
 ### Global Flags

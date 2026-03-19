@@ -6,6 +6,7 @@ mod tui;
 
 use anyhow::Result;
 use clap::Parser;
+use serde_json::json;
 use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Command};
@@ -30,50 +31,56 @@ async fn main() -> Result<()> {
     // Subcommand-level --device takes precedence over the global flag.
     let global_device = cli.device.as_deref();
 
-    match &cli.command {
-        Command::List => {
-            cli::commands::list::execute(cli.json).await?;
-        }
+    let result = match &cli.command {
+        Command::List => cli::commands::list::execute(cli.json).await,
 
         Command::Send { cmd, device } => {
             let device = device.as_deref().or(global_device);
-            cli::commands::send::execute(cmd, device, cli.json).await?;
+            cli::commands::send::execute(cmd, device, cli.json).await
         }
 
         Command::Shell { device } => {
             let device = device.as_deref().or(global_device);
-            cli::commands::shell::execute(device).await?;
+            cli::commands::shell::execute(device).await
         }
 
         Command::Tui { device } => {
             let device = device.as_deref().or(global_device);
-            cli::commands::tui::execute(device).await?;
+            cli::commands::tui::execute(device).await
         }
 
         Command::Led { mode, options } => {
-            cli::commands::led::execute(mode, options, global_device, cli.json).await?;
+            cli::commands::led::execute(mode, options, global_device, cli.json).await
         }
 
         Command::Metadata { action } => {
-            cli::commands::metadata::execute(action, global_device, cli.json).await?;
+            cli::commands::metadata::execute(action, global_device, cli.json).await
         }
 
         Command::Settings { action } => {
-            cli::commands::settings::execute(action, global_device, cli.json).await?;
+            cli::commands::settings::execute(action, global_device, cli.json).await
         }
 
         Command::Dfu { firmware, device } => {
             let device = device.as_deref().or(global_device);
-            cli::commands::dfu::execute(firmware, device, cli.json).await?;
+            cli::commands::dfu::execute(firmware, device, cli.json).await
         }
 
         Command::DfuEnter { device } => {
             let device = device.as_deref().or(global_device);
-            cli::commands::dfu::execute_enter(device, cli.json).await?;
+            cli::commands::dfu::execute_enter(device, cli.json).await
         }
 
-        Command::Completions { shell } => {
-            cli::commands::completions::execute(shell)?;
+        Command::Completions { shell } => cli::commands::completions::execute(shell),
+    };
+
+    // Handle errors: format as JSON if --json flag is set
+    if let Err(e) = result {
+        if cli.json {
+            println!("{}", json_output::format_error(&e, json!({})));
+            std::process::exit(1);
+        } else {
+            return Err(e);
         }
     }
 

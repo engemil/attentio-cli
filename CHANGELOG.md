@@ -123,11 +123,19 @@ Changed
   - Rewrote udev section: recommend running the script, added `dialout` group note,
     moved manual steps into collapsible details block.
   - Clarified `--json` scope (currently `list` and `send`).
+  - Added "Settings File Format" section documenting JSON preset structure.
 - Improved TUI terminal setup/cleanup — raw mode and alternate screen init wrapped so
   cleanup always runs even if setup fails.
 - Commented out unused port mappings in `.devcontainer/docker-compose.yml`.
 - Removed `#[allow(dead_code)]` from `debug_port()`, `read_line()`, and `with_timeout()` — now used by TUI.
 - Updated README implementation status: TUI command marked as Done.
+
+Fixed
+
+- **JSON error output with `--json` flag** — errors from all commands are now properly 
+  formatted as JSON when `--json` is set. Previously, errors propagated to the default 
+  handler and printed in human-readable format even with `--json`. Centralized error 
+  handling in `main.rs` ensures consistent `{"status": "ERROR", ...}` output.
 
 ---
 

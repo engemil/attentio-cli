@@ -1,8 +1,8 @@
 # Attentio CLI
 
-CLI tool for AttentioLight-1 (AL-1) device management. Designed to be interactive either by sending the commands directly (e.g. `attentio send help`) or by using the `tui` command, real-time TUI dashboard with dual CDC (shell and serial prints).
+CLI tool for Attentio device(s) and device management. Designed to be interactive either by intuitive commands (e.g. `attentio help`), send shell command directly (e.g. `attentio send help`), or by using the `tui` command, real-time TUI dashboard with dual CDC (shell and serial prints).
 
-**NB!** Tested on Ubuntu 24.04 (not yet tested on alternative distros, nor operative systems).
+**NB!** Tested only on Ubuntu 24.04 
 
 ## Table of Contents
 
@@ -11,8 +11,11 @@ CLI tool for AttentioLight-1 (AL-1) device management. Designed to be interactiv
     - [Install Locally](#install-locally)
     - [udev Rules for Linux (optional)](#udev-rules-for-linux-optional)
 - [Usage](#usage)
-    - [Global Flags](#global-flags)
-    - [TUI Usage](#tui-usage)
+    - [TUI](#tui
+    - [Commands](#commands)
+      - [Global Flags](#global-flags)
+      - [Settings File Format](#settings-file-format)
+      - [Quoting Arguments](#quoting-arguments)
 - [License](#license)
 
 ## Setup
@@ -30,36 +33,44 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt install build-essential pkg-config libudev-dev libusb-1.0-0-dev
 ```
 
-**Fedora/RHEL:**
+**Fedora/RHEL:** (Not-yet-tested)
 ```bash
 sudo dnf install gcc pkgconf-pkg-config systemd-devel libusb1-devel
 ```
 
-**Arch:**
+**Arch:** (Not-yet-tested)
 ```bash
 sudo pacman -S base-devel pkgconf libusb
 ```
 
-**Alpine:**
+**Alpine:** (Not-yet-tested)
 ```bash
 apk add build-base pkgconf eudev-dev libusb-dev
 ```
 
-**macOS:**
+**macOS:** (Not-yet-tested)
 ```bash
 brew install libusb
 ```
 
-**Windows:**
+**Windows:** (Not-yet-tested)
 - Install libusb via [vcpkg](https://vcpkg.io/) or [libusb.info](https://libusb.info)
 - Install WinUSB driver with [Zadig](https://zadig.akeo.ie/)
 
+
 ### Build & Run
 
+Compile project
+
 ```bash
-cargo build --release                # Release build
-# Run commands: cargo run -- <command>
-cargo run -- list                    # Test
+cargo build --release    # Release build
+cargo build              # Debug build
+```
+
+Compile and run in one step with e.g. `help` command:
+```bash
+cargo run --release -- help  # Release build and run
+cargo run -- help            # Debug build and run
 ```
 
 Clean up:
@@ -71,8 +82,7 @@ cargo clean
 
 ```bash
 cargo install --path .               # Installs 'attentio' to ~/.cargo/bin
-# Run commands: attentio <command>
-attentio list                        # Test
+# Run commandsm, e.g. attentio help
 ```
 
 Clean up local install
@@ -93,20 +103,6 @@ The script creates udev rules in `/etc/udev/rules.d/99-attentio.rules` and adds 
 current user to the `dialout` and `plugdev` groups (log out and back in for group changes
 to take effect).
 
-**Manual setup (without the script)**
-
-Create `/etc/udev/rules.d/99-attentio.rules`:
-```
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0666"
-SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", MODE="0666", SYMLINK+="attentio-%s{serial}"
-```
-
-Reload rules and add yourself to the `dialout` group:
-```bash
-sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo usermod -aG dialout $USER
-```
-
 **Permission problem in Linux**
 
 Without udev rules / group membership you will get **permission denied**:
@@ -117,31 +113,7 @@ WARN Failed to open shell port /dev/ttyACM2: Permission denied
 
 ## Usage
 
-### Implemented Commands
-
-```bash
-attentio list                                               # List connected devices (serial, type, status, ports/USB)
-attentio --json list                                        # List connected devices with JSON output
-attentio send <cmd> [args...] [--device <serial>]           # One-shot command (supports quoted arguments)
-attentio --json send <cmd> [args...] [--device <serial>]    # One-shot with JSON output
-attentio shell [--device <serial>]                          # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
-attentio tui [--device <serial>]                            # TUI dashboard (dual CDC, auto-reconnect)
-attentio led <mode> [options]                               # LED mode/settings (planned)
-attentio metadata                                           # List all device metadata (read-only identity/build info)
-attentio metadata get <key>                                 # Read a specific metadata field
-attentio settings                                           # List all settings (defaults to list)
-attentio settings list                                      # List all settings
-attentio settings get <key>                                 # Read setting
-attentio settings set <key> <value>                         # Write setting
-attentio settings load <file.json>                          # Apply preset from JSON file
-attentio settings save <file.json>                          # Export settings to JSON file
-attentio dfu <firmware.bin>                                 # Flash firmware via DFU (auto-enters bootloader if needed)
-attentio dfu-enter                                          # Enter DFU bootloader mode
-attentio bootloader-enter                                   # Same as "dfu-enter"
-attentio completions <shell>                                # Generate shell completions (planned)
-```
-
-### TUI Usage
+### TUI
 
 Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bottom.
 
@@ -157,22 +129,27 @@ Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bo
 - **Esc** / **CTRL** + **C** to quit
 
 
-### Quoting Arguments
-
-The `send` command automatically handles arguments with spaces. Both double quotes (`"`) and single quotes (`'`) work identically:
+### Commands
 
 ```bash
-# All of these work:
-attentio send echo test                                     # Single word, no quotes needed
-attentio send echo "test"                                   # Single word with quotes (quotes removed)
-attentio send echo 'test'                                   # Single word with single quotes (same as above)
-attentio send echo "test this"                              # Multi-word argument (quotes preserved)
-attentio send echo 'test this'                              # Multi-word with single quotes (same result)
+attentio [--json] list                                        # List connected devices (serial, type, status, ports/USB)
+attentio [--json] send <cmd> [args...] [--device <serial>]    # One-shot command (supports quoted arguments)
+attentio led <mode> [options]                                 # LED mode/settings (planned)
+attentio [--json] metadata                                    # List all device metadata (read-only identity/build info)
+attentio [--json] metadata get <key>                          # Read a specific metadata field
+attentio [--json] settings                                    # List all settings (defaults to list)
+attentio [--json] settings list                               # List all settings
+attentio [--json] settings get <key>                          # Read setting
+attentio [--json] settings set <key> <value>                  # Write setting
+attentio [--json] settings load <file.json>                   # Apply preset from JSON file
+attentio [--json] settings save <file.json>                   # Export settings to JSON file
+attentio shell [--device <serial>]                            # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
+attentio tui [--device <serial>]                              # TUI dashboard (dual CDC, auto-reconnect)
+attentio dfu <firmware.bin>                                   # Flash firmware via DFU (auto-enters bootloader if needed)
+attentio dfu-enter                                            # Enter DFU bootloader mode
+attentio bootloader-enter                                     # Same as "dfu-enter"
+attentio completions <shell>                                  # Generate shell completions (planned)
 ```
-
-**How it works:** When you use quotes in your shell command, bash treats the quoted text as a single argument. The CLI detects arguments containing spaces and automatically wraps them in quotes when sending to the device's shell.
-
-**Note:** Arguments with embedded quotes (e.g., `'He said "hello"'`) are escaped but may not work correctly due to limitations in the ChibiOS shell parser.
 
 ### Global Flags
 
@@ -182,194 +159,38 @@ attentio send echo 'test this'                              # Multi-word with si
 | `--json` | Output results as JSON with `status` field (`OK` or `ERROR`) for scripting/automation |
 | `-v, --verbose` | Enable verbose/debug output |
 
-### JSON Output Format
+### Settings File Format
 
-The `--json` flag provides structured output for scripting and automation. All commands that support `--json` use a consistent format for both success and error cases.
+The `settings load` and `settings save` commands use a JSON file with the following structure:
 
-#### Success Response
-
-All successful operations return a JSON object with `"status": "OK"` and additional fields depending on the command:
-
-**Example: `attentio --json send version`**
 ```json
 {
-  "status": "OK",
-  "device": "AL1MB1-12345678",
-  "command": "version",
-  "response": "1.2.3"
-}
-```
-
-**Example: `attentio --json list`**
-```json
-{
-  "status": "OK",
-  "data": [
-    {
-      "serial": "AL1MB1-12345678",
-      "device_type": "AttentioLight-1",
-      "device_name": "My Device",
-      "mode": "Normal",
-      "usb_location": "Bus 001 Device 060",
-      "cdc0": {
-        "path": "/dev/ttyACM0",
-        "role": "DebugPrints"
-      },
-      "cdc1": {
-        "path": "/dev/ttyACM1",
-        "role": "Shell"
-      }
-    }
+  "settings": [
+    { "key": "device_name", "value": "MyDevice" },
+    { "key": "example_setting", "value": "100" }
   ]
 }
 ```
 
-**Example: Device in bootloader mode**
-```json
-{
-  "status": "OK",
-  "data": [
-    {
-      "serial": "unknown",
-      "device_type": "EngEmil.io Bootloader",
-      "device_name": null,
-      "mode": "Bootloader",
-      "usb_location": "Bus 001 Device 061",
-      "single_cdc": {
-        "path": "/dev/ttyACM0",
-        "role": "Single"
-      }
-    }
-  ]
-}
-```
+Each entry in the `settings` array contains:
+- `key` — the setting name
+- `value` — the setting value (always a string)
 
-**Example: `attentio --json metadata`**
-```json
-{
-  "status": "OK",
-  "metadata": [
-    { "key": "serial_number", "value": "AL1MB1-12345678" },
-    { "key": "hw_version", "value": "1.0" },
-    { "key": "fw_version", "value": "1.2.3" }
-  ],
-  "count": 3
-}
-```
+### Quoting Arguments
 
-**Example: `attentio --json dfu firmware.bin`**
-```json
-{
-  "status": "OK",
-  "action": "dfu",
-  "firmware": "firmware.bin",
-  "message": "Firmware flashed successfully"
-}
-```
+The `send` command automatically handles arguments with spaces. Both double quotes (`"`) and single quotes (`'`) work identically:
 
-#### Error Response
-
-All errors return a JSON object with `"status": "ERROR"` and error details:
-
-**Example: Device not found**
-```json
-{
-  "status": "ERROR",
-  "error": "no device(s) found",
-  "error_type": "DeviceNotFound"
-}
-```
-
-**Example: Command error with context**
-```json
-{
-  "status": "ERROR",
-  "error": "protocol error: unknown command",
-  "error_type": "Protocol",
-  "command": "badcmd",
-  "protocol_message": "unknown command"
-}
-```
-
-**Example: Multiple devices found**
-```json
-{
-  "status": "ERROR",
-  "error": "multiple devices found — use --device <serial> to select one: AL1MB1-111, AL1MB1-222",
-  "error_type": "MultipleDevices",
-  "available_devices": ["AL1MB1-111", "AL1MB1-222"]
-}
-```
-
-#### Error Types
-
-(NB! This is subject for change)
-
-The `error_type` field can be one of:
-- `DeviceNotFound` - No devices connected
-- `MultipleDevices` - Multiple devices found, need to specify `--device`
-- `DeviceSerialNotFound` - Specified serial number not found
-- `PortBusy` - Port is already open by another process
-- `Protocol` - Device returned an error or invalid response
-- `Timeout` - Command timed out waiting for response
-- `Serial` - Serial port communication error
-- `Io` - I/O error
-- `Other` - Other errors
-
-#### Parsing JSON Output
-
-**Bash/Shell:**
 ```bash
-# Check if command succeeded
-if attentio --json send version | jq -e '.status == "OK"' > /dev/null; then
-    echo "Success"
-fi
-
-# Extract response
-attentio --json send version | jq -r '.response'
-
-# Handle errors
-output=$(attentio --json send badcmd)
-if echo "$output" | jq -e '.status == "ERROR"' > /dev/null; then
-    echo "Error: $(echo "$output" | jq -r '.error')"
-fi
+# All of these work:
+attentio send echo test           # Single word, no quotes needed
+attentio send echo "test"         # Single word with quotes (quotes removed)
+attentio send echo 'test'         # Single word with single quotes (same as above)
+attentio send echo "test this"    # Multi-word argument (quotes preserved)
+attentio send echo 'test this'    # Multi-word with single quotes (same result)
 ```
 
-**Python:**
-```python
-import subprocess
-import json
+**Note:** Arguments with embedded quotes (e.g., `'He said "hello"'`) are escaped but may not work correctly due to limitations in the ChibiOS shell parser.
 
-result = subprocess.run(
-    ['attentio', '--json', 'send', 'version'],
-    capture_output=True,
-    text=True
-)
-
-data = json.loads(result.stdout)
-if data['status'] == 'OK':
-    print(f"Version: {data['response']}")
-else:
-    print(f"Error ({data['error_type']}): {data['error']}")
-```
-
-**Node.js:**
-```javascript
-const { execSync } = require('child_process');
-
-try {
-    const output = execSync('attentio --json send version', { encoding: 'utf8' });
-    const data = JSON.parse(output);
-    
-    if (data.status === 'OK') {
-        console.log(`Version: ${data.response}`);
-    } else {
-        console.error(`Error: ${data.error}`);
-    }
-} catch (err) {
-    console.error('Failed to execute command');
-}
-```
 
 
 ## License

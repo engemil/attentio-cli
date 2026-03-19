@@ -129,7 +129,7 @@ Changed
 - Commented out unused port mappings in `.devcontainer/docker-compose.yml`.
 - Removed `#[allow(dead_code)]` from `debug_port()`, `read_line()`, and `with_timeout()` — now used by TUI.
 - Updated README implementation status: TUI command marked as Done.
-- **CLI framework** with clap (derive) supporting subcommands: `list`, `send`, `shell`, `monitor`, `led`, `settings`, `dfu`, `dfu-enter`, and `completions`.
+- **CLI framework** with clap (derive) supporting subcommands: `list`, `send`, `shell`, `monitor`, `led`, `settings`, `dfu`, and `dfu-enter`.
 - **Global flags**: `--device <serial>`, `--json`, and `--verbose`.
 - **Device discovery** module for enumerating and selecting connected AttentioLight-1 devices via serial ports.
 - **Device connection** module for async serial communication using tokio-serial.

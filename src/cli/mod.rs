@@ -104,12 +104,6 @@ pub enum Command {
         #[arg(long, short)]
         device: Option<String>,
     },
-
-    /// Generate shell completions.
-    Completions {
-        /// Target shell (bash, zsh, fish, powershell).
-        shell: String,
-    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -148,7 +148,6 @@ attentio tui [--device <serial>]                                    # TUI dashbo
 attentio dfu <firmware.bin> [--device <serial>]                     # Flash firmware via DFU (auto-enters bootloader if needed)
 attentio dfu-enter [--device <serial>]                              # Enter DFU bootloader mode
 attentio bootloader-enter [--device <serial>]                       # Same as "dfu-enter"
-attentio completions <shell> [--device <serial>]                    # Generate shell completions (planned)
 ```
 
 ### Global Flags

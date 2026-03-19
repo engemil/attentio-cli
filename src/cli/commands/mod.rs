@@ -1,4 +1,3 @@
-pub mod completions;
 pub mod dfu;
 pub mod led;
 pub mod list;

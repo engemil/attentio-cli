@@ -70,8 +70,6 @@ async fn main() -> Result<()> {
             let device = device.as_deref().or(global_device);
             cli::commands::dfu::execute_enter(device, cli.json).await
         }
-
-        Command::Completions { shell } => cli::commands::completions::execute(shell),
     };
 
     // Handle errors: format as JSON if --json flag is set

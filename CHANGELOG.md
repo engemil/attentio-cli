@@ -17,6 +17,32 @@ Note: Update `Cargo.toml` when publishing new version.
 
 Added
 
+- **Device selection by index (`--device <#>`)** — The `--device` flag now accepts a
+  1-based device number (matching the `#` column from `attentio list`) in addition to the
+  full USB serial number. E.g., `attentio metadata --device 1` selects the first device.
+  The index is computed statelessly from the serial-number-sorted device list — no
+  persistent state or config files are involved.
+- **Device index in `list` output** — `attentio list` now shows a `#` column as the first
+  column. The `--json` output includes a corresponding `index` field per device.
+- **`DeviceIndexOutOfRange` error** — when `--device <#>` specifies an index that exceeds
+  the number of connected devices, the error message shows both the requested index and
+  the actual device count, and suggests running `attentio list`.
+
+Changed
+
+- **`list` output redesigned as 2-line card layout** — each device now uses two lines.
+  Line 1 (tabular): `#`, device name, device type, status, serial. Line 2 (indented):
+  port paths and USB location with `Ports:` / `USB:` labels. Column order changed to put
+  device name first for quick identification. Fits within ~85 columns instead of ~170+.
+- **Simplified port role labels** — port roles in `list` output now show `[debug]`,
+  `[shell]`, `[serial]` instead of `[CDC0 (debug_prints)]`, `[CDC1 (shell)]`, `[single]`.
+- **Updated `MultipleDevices` error message** — now suggests `--device <#>` in addition
+  to `--device <serial>`, and points users to `attentio list`.
+- **Updated `--device` help text** — all subcommand help strings now describe the flag as
+  accepting a serial number or index.
+
+Added (previous)
+
 - **Device identity from USB serial descriptor** — Device serial number is now read
   from the USB iSerialNumber descriptor (24-char chip UID) instead of querying the
   shell `metadata get serial_number` command. This works in both Normal and Bootloader

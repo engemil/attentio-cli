@@ -32,49 +32,28 @@ pub async fn execute(json: bool) -> Result<()> {
 }
 
 fn print_json(devices: &[AttentioDevice]) -> Result<()> {
+    // Add 1-based index to each device in JSON output
+    let devices_with_index: Vec<serde_json::Value> = devices
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let mut v = serde_json::to_value(d).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("index".to_string(), json!(i + 1));
+            }
+            v
+        })
+        .collect();
     let output = json!({
-        "data": devices,
+        "data": devices_with_index,
     });
     println!("{}", json_output::format_success(output));
     Ok(())
 }
 
 fn print_table(devices: &[AttentioDevice]) {
-    // Calculate column widths
-    let serial_width = devices
-        .iter()
-        .map(|d| d.serial.len())
-        .max()
-        .unwrap_or(6)
-        .max(6);
-
-    let mode_width = devices
-        .iter()
-        .map(|d| format_status(d).len())
-        .max()
-        .unwrap_or(6)
-        .max(6);
-
-    let ports_width = devices
-        .iter()
-        .map(|d| format_ports(d).len())
-        .max()
-        .unwrap_or(7)
-        .max(7);
-
-    let usb_loc_width = devices
-        .iter()
-        .map(|d| d.usb_location.as_deref().unwrap_or("-").len())
-        .max()
-        .unwrap_or(12)
-        .max(12); // min = len("USB LOCATION")
-
-    let device_type_width = devices
-        .iter()
-        .map(|d| d.device_type.as_deref().unwrap_or("-").len())
-        .max()
-        .unwrap_or(11)
-        .max(11); // min = len("DEVICE TYPE")
+    // Calculate column widths for line 1: #  DEVICE NAME  DEVICE TYPE  STATUS  SERIAL
+    let index_width = devices.len().to_string().len().max(1); // min = len("#")
 
     let device_name_width = devices
         .iter()
@@ -83,32 +62,65 @@ fn print_table(devices: &[AttentioDevice]) {
         .unwrap_or(11)
         .max(11); // min = len("DEVICE NAME")
 
+    let device_type_width = devices
+        .iter()
+        .map(|d| d.device_type.as_deref().unwrap_or("-").len())
+        .max()
+        .unwrap_or(11)
+        .max(11); // min = len("DEVICE TYPE")
+
+    let mode_width = devices
+        .iter()
+        .map(|d| format_status(d).len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
+
+    let serial_width = devices
+        .iter()
+        .map(|d| d.serial.len())
+        .max()
+        .unwrap_or(6)
+        .max(6);
+
+    // Indentation for line 2: align under DEVICE NAME column
+    let indent = " ".repeat(index_width + 2);
+
     // Print header
     println!(
-        "{:<serial_width$}  {:<device_type_width$}  {:<device_name_width$}  {:<mode_width$}  {:<ports_width$}  {:<usb_loc_width$}",
-        "SERIAL", "DEVICE TYPE", "DEVICE NAME", "STATUS", "PORT(S)", "USB LOCATION",
+        "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<serial_width$}",
+        "#", "DEVICE NAME", "DEVICE TYPE", "STATUS", "SERIAL",
     );
     println!(
-        "{:<serial_width$}  {:<device_type_width$}  {:<device_name_width$}  {:<mode_width$}  {:<ports_width$}  {:<usb_loc_width$}",
-        "-".repeat(serial_width),
-        "-".repeat(device_type_width),
+        "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<serial_width$}",
+        "-".repeat(index_width),
         "-".repeat(device_name_width),
+        "-".repeat(device_type_width),
         "-".repeat(mode_width),
-        "-".repeat(ports_width),
-        "-".repeat(usb_loc_width),
+        "-".repeat(serial_width),
     );
 
-    // Print rows
-    for device in devices {
+    // Print rows (2 lines per device, blank line between devices)
+    for (i, device) in devices.iter().enumerate() {
+        // Line 1: identity
         println!(
-            "{:<serial_width$}  {:<device_type_width$}  {:<device_name_width$}  {:<mode_width$}  {:<ports_width$}  {:<usb_loc_width$}",
-            device.serial,
-            device.device_type.as_deref().unwrap_or("-"),
+            "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<serial_width$}",
+            i + 1,
             device.product.as_deref().unwrap_or("-"),
+            device.device_type.as_deref().unwrap_or("-"),
             format_status(device),
-            format_ports(device),
-            device.usb_location.as_deref().unwrap_or("-"),
+            device.serial,
         );
+
+        // Line 2: connection details (indented)
+        let ports = format_ports(device);
+        let usb_loc = device.usb_location.as_deref().unwrap_or("-");
+        println!("{}Ports: {}   USB: {}", indent, ports, usb_loc);
+
+        // Blank line between devices (but not after the last one)
+        if i + 1 < devices.len() {
+            println!();
+        }
     }
 
     println!();

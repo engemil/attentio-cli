@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "attentio", version, about, long_about = None)]
 pub struct Cli {
-    /// Target device by serial number (defaults to only connected device).
+    /// Target device by serial number or index from 'attentio list' (defaults to only connected device).
     #[arg(long, short, global = true)]
     pub device: Option<String>,
 
@@ -29,7 +29,7 @@ pub enum Command {
 
     /// Open an interactive ChibiOS shell session.
     Shell {
-        /// Target device by serial number.
+        /// Target device by serial number or index.
         #[arg(long, short)]
         device: Option<String>,
     },
@@ -51,14 +51,14 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         cmd: Vec<String>,
 
-        /// Target device by serial number.
+        /// Target device by serial number or index.
         #[arg(long, short)]
         device: Option<String>,
     },
 
     /// Launch TUI to monitor CDC data streams (debug prints + shell).
     Tui {
-        /// Target device by serial number.
+        /// Target device by serial number or index.
         #[arg(long, short)]
         device: Option<String>,
     },
@@ -92,7 +92,7 @@ pub enum Command {
         /// Path to firmware binary file.
         firmware: String,
 
-        /// Target device by serial number.
+        /// Target device by serial number or index.
         #[arg(long, short)]
         device: Option<String>,
     },
@@ -100,7 +100,7 @@ pub enum Command {
     /// Enter DFU bootloader mode on the device.
     #[command(visible_alias = "bootloader-enter")]
     DfuEnter {
-        /// Target device by serial number.
+        /// Target device by serial number or index.
         #[arg(long, short)]
         device: Option<String>,
     },

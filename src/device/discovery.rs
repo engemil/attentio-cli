@@ -47,9 +47,9 @@ pub enum CdcRole {
 impl std::fmt::Display for CdcRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CdcRole::DebugPrints => write!(f, "CDC0 (debug_prints)"),
-            CdcRole::Shell => write!(f, "CDC1 (shell)"),
-            CdcRole::Single => write!(f, "single"),
+            CdcRole::DebugPrints => write!(f, "debug"),
+            CdcRole::Shell => write!(f, "shell"),
+            CdcRole::Single => write!(f, "serial"),
         }
     }
 }
@@ -546,18 +546,22 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
     devices
 }
 
-/// Find a specific device by serial number, or the only connected device.
+/// Find a specific device by serial number or index, or the only connected device.
 ///
-/// If `serial` is Some, filters to that device.
-/// If `serial` is None:
-///   - Returns the device if exactly one is connected.
-///   - Returns an error if zero or multiple devices are connected.
+/// The `target` parameter accepts:
+///   - A device index (1-based number matching the `#` column from `attentio list`)
+///   - A serial number string (exact match)
+///   - None: auto-selects if exactly one device is connected
 pub async fn resolve_device(serial: Option<&str>) -> Result<AttentioDevice, AttentioError> {
     let devices = find_devices().await?;
     select_device(devices, serial)
 }
 
-/// Select a device from a list by serial number, or return the only one.
+/// Select a device from a list by serial number, index, or return the only one.
+///
+/// If `target` is a small positive integer (1-based), it is treated as a device
+/// index into the sorted device list (matching the `#` column from `attentio list`).
+/// Otherwise, it is treated as an exact serial number match.
 ///
 /// Separated from `resolve_device` to allow unit testing without hardware.
 pub fn select_device(
@@ -565,12 +569,27 @@ pub fn select_device(
     serial: Option<&str>,
 ) -> Result<AttentioDevice, AttentioError> {
     match serial {
-        Some(target) => devices
-            .into_iter()
-            .find(|d| d.serial == target)
-            .ok_or_else(|| AttentioError::DeviceSerialNotFound {
-                serial: target.to_string(),
-            }),
+        Some(target) => {
+            // If the target parses as a positive integer, treat it as a 1-based device index.
+            // Serial numbers are 24-char hex strings (e.g. "3A002B000F51363439373834"),
+            // so they will never parse as a small usize.
+            if let Ok(index) = target.parse::<usize>() {
+                let count = devices.len();
+                if index == 0 || index > count {
+                    return Err(AttentioError::DeviceIndexOutOfRange { index, count });
+                }
+                // 1-based index: device #1 is devices[0]
+                Ok(devices.into_iter().nth(index - 1).unwrap())
+            } else {
+                // Not a number — treat as serial number (exact match)
+                devices
+                    .into_iter()
+                    .find(|d| d.serial == target)
+                    .ok_or_else(|| AttentioError::DeviceSerialNotFound {
+                        serial: target.to_string(),
+                    })
+            }
+        }
         None => match devices.len() {
             0 => Err(AttentioError::DeviceNotFound),
             1 => Ok(devices.into_iter().next().unwrap()),

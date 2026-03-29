@@ -7,11 +7,14 @@ pub enum AttentioError {
     #[error("no device(s) found")]
     DeviceNotFound,
 
-    #[error("multiple devices found — use --device <serial> to select one: {serials}")]
+    #[error("multiple devices found — use --device <#> or --device <serial> to select one (run 'attentio list' to see devices): {serials}")]
     MultipleDevices { serials: String },
 
     #[error("device with serial '{serial}' not found")]
     DeviceSerialNotFound { serial: String },
+
+    #[error("device #{index} not found — only {count} device(s) connected. Run 'attentio list' to see available devices.")]
+    DeviceIndexOutOfRange { index: usize, count: usize },
 
     #[error("port {port} is busy — another process has it open")]
     PortBusy { port: String },
@@ -44,6 +47,7 @@ impl AttentioError {
             AttentioError::DeviceNotFound => "DeviceNotFound",
             AttentioError::MultipleDevices { .. } => "MultipleDevices",
             AttentioError::DeviceSerialNotFound { .. } => "DeviceSerialNotFound",
+            AttentioError::DeviceIndexOutOfRange { .. } => "DeviceIndexOutOfRange",
             AttentioError::PortBusy { .. } => "PortBusy",
             AttentioError::Serial(_) => "Serial",
             AttentioError::Io(_) => "Io",
@@ -61,6 +65,10 @@ impl AttentioError {
             }),
             AttentioError::DeviceSerialNotFound { serial } => json!({
                 "requested_serial": serial
+            }),
+            AttentioError::DeviceIndexOutOfRange { index, count } => json!({
+                "requested_index": index,
+                "device_count": count
             }),
             AttentioError::PortBusy { port } => json!({
                 "port": port

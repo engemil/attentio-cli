@@ -132,29 +132,29 @@ Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bo
 ### Commands
 
 ```bash
-attentio [--json] list                                              # List connected devices (serial, type, status, ports/USB)
-attentio [--json] send <cmd> [args...] [--device <serial>]          # One-shot command (supports quoted arguments)
-attentio led <mode> [options] [--device <serial>]                   # LED mode/settings (planned)
-attentio [--json] metadata [--device <serial>]                      # List all device metadata (read-only identity/build info)
-attentio [--json] metadata get <key> [--device <serial>]            # Read a specific metadata field
-attentio [--json] settings [--device <serial>]                      # List all settings (defaults to list)
-attentio [--json] settings list [--device <serial>]                 # List all settings
-attentio [--json] settings get <key> [--device <serial>]            # Read setting
-attentio [--json] settings set <key> <value> [--device <serial>]    # Write setting
-attentio [--json] settings load <file.json> [--device <serial>]     # Apply preset from JSON file
-attentio [--json] settings save <file.json> [--device <serial>]     # Export settings to JSON file
-attentio shell [--device <serial>]                                  # Interactive ChibiOS shell (<serial> can be found from 'attentio list')
-attentio tui [--device <serial>]                                    # TUI dashboard (dual CDC, auto-reconnect)
-attentio dfu <firmware.bin> [--device <serial>]                     # Flash firmware via DFU (auto-enters bootloader if needed)
-attentio dfu-enter [--device <serial>]                              # Enter DFU bootloader mode
-attentio bootloader-enter [--device <serial>]                       # Same as "dfu-enter"
+attentio [--json] list                                                  # List connected devices (index, name, type, status, serial, ports)
+attentio [--json] send <cmd> [args...] [--device <#|serial>]            # One-shot command (supports quoted arguments)
+attentio led <mode> [options] [--device <#|serial>]                     # LED mode/settings (planned)
+attentio [--json] metadata [--device <#|serial>]                        # List all device metadata (read-only identity/build info)
+attentio [--json] metadata get <key> [--device <#|serial>]              # Read a specific metadata field
+attentio [--json] settings [--device <#|serial>]                        # List all settings (defaults to list)
+attentio [--json] settings list [--device <#|serial>]                   # List all settings
+attentio [--json] settings get <key> [--device <#|serial>]              # Read setting
+attentio [--json] settings set <key> <value> [--device <#|serial>]      # Write setting
+attentio [--json] settings load <file.json> [--device <#|serial>]       # Apply preset from JSON file
+attentio [--json] settings save <file.json> [--device <#|serial>]       # Export settings to JSON file
+attentio shell [--device <#|serial>]                                    # Interactive ChibiOS shell
+attentio tui [--device <#|serial>]                                      # TUI dashboard (dual CDC, auto-reconnect)
+attentio dfu <firmware.bin> [--device <#|serial>]                       # Flash firmware via DFU (auto-enters bootloader if needed)
+attentio dfu-enter [--device <#|serial>]                                # Enter DFU bootloader mode
+attentio bootloader-enter [--device <#|serial>]                         # Same as "dfu-enter"
 ```
 
 ### Global Flags
 
 | Flag | Description |
 |------|-------------|
-| `-d, --device <serial>` | Target device by USB serial number — 24-char chip UID (defaults to only connected device) |
+| `-d, --device <#\|serial>` | Target device by index (from `attentio list`) or USB serial number (defaults to only connected device) |
 | `--json` | Output results as JSON with `status` field (`OK` or `ERROR`) for scripting/automation |
 | `-v, --verbose` | Enable verbose/debug output |
 

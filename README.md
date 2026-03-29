@@ -154,7 +154,7 @@ attentio bootloader-enter [--device <serial>]                       # Same as "d
 
 | Flag | Description |
 |------|-------------|
-| `-d, --device <serial>` | Target device by serial number (defaults to only connected device) |
+| `-d, --device <serial>` | Target device by USB serial number — 24-char chip UID (defaults to only connected device) |
 | `--json` | Output results as JSON with `status` field (`OK` or `ERROR`) for scripting/automation |
 | `-v, --verbose` | Enable verbose/debug output |
 

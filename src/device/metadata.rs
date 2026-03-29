@@ -1,7 +1,14 @@
-//! Device metadata query module
+//! Device metadata query module.
 //!
-//! Queries read-only device metadata (serial number) via the `metadata`
-//! shell command over an already-opened connection.
+//! Provides a structured query helper for the firmware's `metadata` shell
+//! command over an already-opened connection. Currently unused — the CLI's
+//! `metadata` subcommand sends raw shell commands directly. Kept for
+//! potential future use.
+//!
+//! Note: Device serial number is now obtained from the USB iSerialNumber
+//! descriptor (chip UID), not from this module.
+
+#![allow(dead_code)]
 
 use tracing::debug;
 

@@ -215,21 +215,29 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     eprintln!("Waiting for device to enter bootloader (DFU) mode...");
     tokio::time::sleep(POST_REBOOT_DELAY).await;
 
-    wait_for_dfu_device().await?;
+    wait_for_dfu_device(Some(&serial)).await?;
 
     Ok(serial)
 }
 
-/// Poll until a DFU device appears on USB, or timeout.
-async fn wait_for_dfu_device() -> Result<()> {
+/// Poll until a specific DFU device appears on USB, or timeout.
+///
+/// If `serial` is provided, waits for a bootloader device with that serial.
+/// Otherwise waits for any bootloader device.
+async fn wait_for_dfu_device(serial: Option<&str>) -> Result<()> {
     let start = Instant::now();
 
     loop {
         let devices = find_devices().await.unwrap_or_default();
-        let has_bootloader = devices.iter().any(|d| d.mode == DeviceMode::Bootloader);
+        let found = devices
+            .iter()
+            .any(|d| d.mode == DeviceMode::Bootloader && serial.is_none_or(|s| d.serial == s));
 
-        if has_bootloader {
-            debug!("DFU device detected in bootloader mode");
+        if found {
+            debug!(
+                "DFU device detected in bootloader mode (serial: {})",
+                serial.unwrap_or("any")
+            );
             return Ok(());
         }
 
@@ -245,16 +253,24 @@ async fn wait_for_dfu_device() -> Result<()> {
     }
 }
 
-/// Poll until a Normal-mode device re-appears, or timeout.
-async fn wait_for_normal_device() -> Result<()> {
+/// Poll until a specific Normal-mode device re-appears, or timeout.
+///
+/// If `serial` is provided, waits for a normal device with that serial.
+/// Otherwise waits for any normal device.
+async fn wait_for_normal_device(serial: Option<&str>) -> Result<()> {
     let start = Instant::now();
 
     loop {
         let devices = find_devices().await.unwrap_or_default();
-        let has_normal = devices.iter().any(|d| d.mode == DeviceMode::Normal);
+        let found = devices
+            .iter()
+            .any(|d| d.mode == DeviceMode::Normal && serial.is_none_or(|s| d.serial == s));
 
-        if has_normal {
-            debug!("Device re-enumerated in normal mode");
+        if found {
+            debug!(
+                "Device re-enumerated in normal mode (serial: {})",
+                serial.unwrap_or("any")
+            );
             return Ok(());
         }
 
@@ -336,7 +352,24 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
     // ── Step 2: Ensure device is in bootloader mode ─────────────────────────
 
     let devices = find_devices().await.unwrap_or_default();
-    let has_bootloader = devices.iter().any(|d| d.mode == DeviceMode::Bootloader);
+
+    // Determine the target device serial for filtering.
+    // If --device was given, use it. Otherwise try to find the serial from
+    // available devices (bootloader or normal).
+    let target_serial: Option<String> = if let Some(s) = device {
+        Some(s.to_string())
+    } else {
+        // If there's exactly one device total, use its serial
+        if devices.len() == 1 && devices[0].serial != "unknown" {
+            Some(devices[0].serial.clone())
+        } else {
+            None
+        }
+    };
+
+    let has_bootloader = devices.iter().any(|d| {
+        d.mode == DeviceMode::Bootloader && target_serial.as_deref().is_none_or(|s| d.serial == s)
+    });
 
     if !has_bootloader {
         // Try to find a normal-mode device and auto-enter DFU
@@ -363,13 +396,15 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
     // ── Step 3: Flash firmware via DFU ──────────────────────────────────────
 
     let firmware_len = firmware_data.len();
+    let serial_for_flash = target_serial.clone();
 
     // DfuSync is !Send, so we must run it on the current thread via spawn_blocking
     // with a dedicated rusb context. We move the firmware data into the closure.
-    let flash_result =
-        tokio::task::spawn_blocking(move || flash_dfu_device(&firmware_data, firmware_len))
-            .await
-            .context("DFU flash task panicked")?;
+    let flash_result = tokio::task::spawn_blocking(move || {
+        flash_dfu_device(&firmware_data, firmware_len, serial_for_flash.as_deref())
+    })
+    .await
+    .context("DFU flash task panicked")?;
 
     flash_result?;
 
@@ -377,17 +412,72 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
 
     eprintln!("Waiting for device to reboot...");
     tokio::time::sleep(POST_REBOOT_DELAY).await;
-    wait_for_normal_device().await?;
+    wait_for_normal_device(target_serial.as_deref()).await?;
 
     Ok(())
+}
+
+/// Open a DFU device by USB serial number.
+///
+/// Manually enumerates USB devices, finds the one with matching VID/PID/serial,
+/// and constructs a `DfuLibusb` instance via `from_usb_device`.
+fn open_dfu_by_serial<C: rusb::UsbContext>(
+    context: &C,
+    target_serial: &str,
+) -> Result<dfu_libusb::Dfu<C>> {
+    let devices = context
+        .devices()
+        .context("failed to enumerate USB devices")?;
+
+    for device in devices.iter() {
+        let desc = match device.device_descriptor() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+            continue;
+        }
+
+        let handle = match device.open() {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+
+        // Check if the serial matches
+        match handle.read_serial_number_string_ascii(&desc) {
+            Ok(s) if s == target_serial => {
+                debug!("Found DFU device with serial {}", target_serial);
+                return dfu_libusb::DfuLibusb::from_usb_device(
+                    device, handle, DFU_IFACE, DFU_ALT,
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to open DFU device (serial {}): {} — \
+                         check USB permissions (udev rules) and ensure the device is in bootloader mode",
+                        target_serial,
+                        e
+                    )
+                });
+            }
+            _ => continue,
+        }
+    }
+
+    anyhow::bail!(
+        "DFU device with serial '{}' not found — \
+         ensure the device is connected and in bootloader mode",
+        target_serial
+    )
 }
 
 /// Synchronous DFU flash using dfu-libusb.
 ///
 /// This runs on a blocking thread (via `spawn_blocking`) because `DfuSync` is `!Send`.
-fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize) -> Result<()> {
+/// If `serial` is provided, opens the specific device with that USB serial number.
+fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize, serial: Option<&str>) -> Result<()> {
     // Try to flash; if it fails due to invalid state, reset USB and retry once.
-    match flash_dfu_device_inner(firmware_data, firmware_len) {
+    match flash_dfu_device_inner(firmware_data, firmware_len, serial) {
         Ok(()) => Ok(()),
         Err(e) => {
             let err_str = e.to_string();
@@ -395,8 +485,8 @@ fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize) -> Result<()> {
                 // Device is stuck in a bad state (e.g., DfuDnloadIdle from a previous
                 // incomplete transfer). Reset USB and retry.
                 eprintln!("Device in invalid state, resetting USB and retrying...");
-                reset_dfu_device()?;
-                flash_dfu_device_inner(firmware_data, firmware_len)
+                reset_dfu_device(serial)?;
+                flash_dfu_device_inner(firmware_data, firmware_len, serial)
             } else {
                 Err(e)
             }
@@ -405,7 +495,9 @@ fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize) -> Result<()> {
 }
 
 /// Reset the DFU device via USB reset to clear stale state.
-fn reset_dfu_device() -> Result<()> {
+///
+/// If `serial` is provided, resets only the device with that USB serial number.
+fn reset_dfu_device(serial: Option<&str>) -> Result<()> {
     let context = rusb::Context::new().context("failed to create USB context")?;
 
     for device in context.devices()?.iter() {
@@ -414,25 +506,38 @@ fn reset_dfu_device() -> Result<()> {
             Err(_) => continue,
         };
 
-        if desc.vendor_id() == ATTENTIO_VID && desc.product_id() == ATTENTIO_PID {
-            let handle = device
-                .open()
-                .context("failed to open DFU device for reset")?;
-            handle.reset().context("failed to reset DFU device")?;
-            debug!("DFU device reset successfully");
-
-            // Wait for device to re-enumerate after reset
-            drop(handle);
-            wait_for_dfu_device_sync()?;
-            return Ok(());
+        if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+            continue;
         }
+
+        let handle = device
+            .open()
+            .context("failed to open DFU device for reset")?;
+
+        // If serial is specified, verify it matches
+        if let Some(target) = serial {
+            match handle.read_serial_number_string_ascii(&desc) {
+                Ok(s) if s == target => {} // match — proceed with reset
+                _ => continue,             // no match — skip
+            }
+        }
+
+        handle.reset().context("failed to reset DFU device")?;
+        debug!("DFU device reset successfully");
+
+        // Wait for device to re-enumerate after reset
+        drop(handle);
+        wait_for_dfu_device_sync(serial)?;
+        return Ok(());
     }
 
     anyhow::bail!("DFU device not found for reset")
 }
 
 /// Synchronous poll until a DFU device appears on USB, or timeout.
-fn wait_for_dfu_device_sync() -> Result<()> {
+///
+/// If `serial` is provided, waits for a device with that USB serial number.
+fn wait_for_dfu_device_sync(serial: Option<&str>) -> Result<()> {
     let start = Instant::now();
     let timeout = Duration::from_secs(5);
     let poll_interval = Duration::from_millis(200);
@@ -447,10 +552,24 @@ fn wait_for_dfu_device_sync() -> Result<()> {
                 Err(_) => continue,
             };
 
-            if desc.vendor_id() == ATTENTIO_VID && desc.product_id() == ATTENTIO_PID {
-                debug!("DFU device re-enumerated after reset");
-                return Ok(());
+            if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+                continue;
             }
+
+            // If serial is specified, verify it matches
+            if let Some(target) = serial {
+                let handle = match device.open() {
+                    Ok(h) => h,
+                    Err(_) => continue,
+                };
+                match handle.read_serial_number_string_ascii(&desc) {
+                    Ok(s) if s == target => {} // match
+                    _ => continue,             // no match
+                }
+            }
+
+            debug!("DFU device re-enumerated after reset");
+            return Ok(());
         }
 
         if start.elapsed() > timeout {
@@ -460,19 +579,31 @@ fn wait_for_dfu_device_sync() -> Result<()> {
 }
 
 /// Inner flash implementation — called by flash_dfu_device with retry logic.
-fn flash_dfu_device_inner(firmware_data: &[u8], firmware_len: usize) -> Result<()> {
+///
+/// If `serial` is provided, opens the specific DFU device with that USB serial.
+/// Otherwise opens the first device matching VID/PID.
+fn flash_dfu_device_inner(
+    firmware_data: &[u8],
+    firmware_len: usize,
+    serial: Option<&str>,
+) -> Result<()> {
     let context = rusb::Context::new().context("failed to create USB context")?;
 
-    // Open the DFU device
-    let mut dfu =
+    // Open the DFU device — if serial is specified, manually enumerate and
+    // filter by serial using from_usb_device(); otherwise use open() for
+    // backward compatibility.
+    let mut dfu = if let Some(target_serial) = serial {
+        open_dfu_by_serial(&context, target_serial)?
+    } else {
         dfu_libusb::DfuLibusb::open(&context, ATTENTIO_VID, ATTENTIO_PID, DFU_IFACE, DFU_ALT)
             .map_err(|e| {
                 anyhow::anyhow!(
                     "failed to open DFU device: {} — \
-            check USB permissions (udev rules) and ensure the device is in bootloader mode",
+                     check USB permissions (udev rules) and ensure the device is in bootloader mode",
                     e
                 )
-            })?;
+            })?
+    };
 
     // Set the target flash address (after bootloader)
     dfu.override_address(APP_BASE_ADDRESS);

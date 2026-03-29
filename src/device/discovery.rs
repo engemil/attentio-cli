@@ -66,7 +66,7 @@ pub struct CdcPort {
 /// A discovered device, potentially with multiple CDC ports.
 #[derive(Debug, Clone, Serialize)]
 pub struct AttentioDevice {
-    /// USB serial number (unique per device).
+    /// USB serial number (chip UID from iSerialNumber descriptor, 24 hex chars).
     pub serial: String,
     /// USB product string (iProduct descriptor) — e.g. "EngEmil.io AttentioLight-1".
     pub device_type: Option<String>,
@@ -151,12 +151,13 @@ fn detect_device_mode(product: Option<&String>) -> DeviceMode {
 
 /// Discover all connected devices.
 ///
-/// Enumerates serial ports, filters by VID/PID, groups by serial number,
+/// Enumerates serial ports, filters by VID/PID, groups by USB serial number
+/// (from the iSerialNumber descriptor — the chip's unique 96-bit UID),
 /// and classifies CDC ports (dual CDC: lower port number = CDC0, higher = CDC1).
 /// Also detects pure DFU devices that don't expose serial ports.
 ///
-/// For devices in Normal mode with shell ports, queries device metadata
-/// (serial number) and settings (device name) from the device.
+/// For devices in Normal mode with shell ports, queries device settings
+/// (device name) from the device.
 pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
     let ports = serialport::available_ports().map_err(AttentioError::Serial)?;
 
@@ -176,7 +177,7 @@ pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
         }
     }
 
-    // Query metadata + settings from Normal mode devices (sequentially)
+    // Query settings from Normal mode devices (sequentially)
     for device in &mut devices {
         if device.mode == DeviceMode::Normal {
             if let Some(shell_port) = device.shell_port().map(|s| s.to_string()) {
@@ -185,16 +186,17 @@ pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
         }
     }
 
-    // Re-sort after querying (serial numbers may have changed)
+    // Sort by serial for deterministic output
     devices.sort_by(|a, b| a.serial.cmp(&b.serial));
 
     Ok(devices)
 }
 
-/// Query metadata and settings from a device over its shell port.
+/// Query device settings from a device over its shell port.
 ///
-/// Opens a single connection, syncs the shell, then queries metadata
-/// (serial number) and settings (device name). Retries once on failure
+/// Opens a single connection, syncs the shell, then queries settings
+/// (device name). Serial number is no longer queried here — it comes
+/// from the USB iSerialNumber descriptor. Retries once on failure
 /// with 250ms backoff.
 async fn query_device_info(device: &mut AttentioDevice, shell_port: &str) {
     const MAX_ATTEMPTS: usize = 2;
@@ -242,18 +244,6 @@ async fn query_device_info(device: &mut AttentioDevice, shell_port: &str) {
             continue;
         }
 
-        // Query metadata (serial number)
-        match crate::device::metadata::query_device_metadata(&mut conn).await {
-            Ok(metadata) => {
-                if let Some(serial) = metadata.serial_number {
-                    device.serial = serial;
-                }
-            }
-            Err(e) => {
-                debug!("Failed to query metadata from {}: {}", shell_port, e);
-            }
-        }
-
         // Query settings (device name)
         match crate::device::settings::query_device_settings(&mut conn).await {
             Ok(settings) => {
@@ -298,12 +288,13 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, String> {
         }
 
         // Try to open the device to read strings to detect mode
-        let (mode, device_type) = if let Ok(handle) = device.open() {
+        let (mode, device_type, serial) = if let Ok(handle) = device.open() {
             let product = handle.read_product_string_ascii(&desc).ok();
+            let serial = handle.read_serial_number_string_ascii(&desc).ok();
             let mode = detect_device_mode(product.as_ref());
-            (mode, product)
+            (mode, product, serial)
         } else {
-            (DeviceMode::Unknown, None)
+            (DeviceMode::Unknown, None, None)
         };
 
         // Only add this device if it's in bootloader mode
@@ -316,10 +307,11 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, String> {
             );
             debug!("Found DFU device in bootloader mode at {}", usb_location);
 
-            // Don't use USB descriptor strings - they're hardcoded and not unique
-            // Settings will be queried later for normal mode devices
+            let serial = serial.unwrap_or_else(|| "unknown".to_string());
+            debug!("DFU device serial: {}", serial);
+
             dfu_devices.push(AttentioDevice {
-                serial: "unknown".to_string(),
+                serial,
                 device_type,
                 product: None,
                 mode,
@@ -334,20 +326,21 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, String> {
     Ok(dfu_devices)
 }
 
-/// USB device info read via libusb (product string and bus location).
+/// USB device info read via libusb (serial, product string, and bus location).
 struct UsbDeviceInfo {
+    serial: Option<String>,
     product: Option<String>,
     location: String,
 }
 
-/// Read USB device info (iProduct string and bus location) for a device identified
-/// by its USB serial number, or — if the serial is unknown — by being the sole
-/// device with matching VID/PID.
+/// Read USB device info (iSerialNumber, iProduct string, and bus location)
+/// for a device identified by its USB serial number, or — if the serial is
+/// unknown — by being the sole device with matching VID/PID.
 ///
 /// `serialport`'s port enumeration often returns `product: None` and
 /// `serial_number: None` on Linux because it doesn't open the device to read
-/// string descriptors. We use `rusb` directly to read the iProduct descriptor
-/// and bus/device address.
+/// string descriptors. We use `rusb` directly to read the iSerialNumber and
+/// iProduct descriptors, plus the bus/device address.
 fn read_usb_device_info(usb_serial: &str) -> Option<UsbDeviceInfo> {
     let context = rusb::Context::new().ok()?;
     let devices = context.devices().ok()?;
@@ -378,22 +371,28 @@ fn read_usb_device_info(usb_serial: &str) -> Option<UsbDeviceInfo> {
             }
         };
 
+        let serial = handle.read_serial_number_string_ascii(&desc).ok();
+        let product = handle.read_product_string_ascii(&desc).ok();
+
         if usb_serial != "unknown" {
-            // Match by serial number string — skip if we can't read it or it doesn't match
-            match handle.read_serial_number_string_ascii(&desc) {
-                Ok(s) if s == usb_serial => {
+            // Match by serial number string — skip if it doesn't match
+            match &serial {
+                Some(s) if s == usb_serial => {
                     return Some(UsbDeviceInfo {
-                        product: handle.read_product_string_ascii(&desc).ok(),
+                        serial,
+                        product,
                         location,
                     });
                 }
-                Ok(_) => continue,
-                Err(_) => continue,
+                _ => continue,
             }
         } else {
             // Serial unknown — collect all candidates and return if unambiguous
-            let product = handle.read_product_string_ascii(&desc).ok();
-            candidates.push(UsbDeviceInfo { product, location });
+            candidates.push(UsbDeviceInfo {
+                serial,
+                product,
+                location,
+            });
         }
     }
 
@@ -471,23 +470,37 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
             mode
         };
 
-        // Read USB device info (iProduct string + bus location) via libusb —
-        // serialport often returns None for product on Linux because it doesn't
-        // open the device to read descriptors.
+        // Read USB device info (iSerialNumber, iProduct string + bus location)
+        // via libusb — serialport often returns None for product and serial on
+        // Linux because it doesn't open the device to read descriptors.
         let usb_info = read_usb_device_info(&usb_serial);
         let device_type = usb_info.as_ref().and_then(|i| i.product.clone());
-        let usb_location = usb_info.map(|i| i.location);
+        let usb_location = usb_info.as_ref().map(|i| i.location.clone());
         debug!("Device type from USB descriptor: {:?}", device_type);
         debug!("USB location: {:?}", usb_location);
+
+        // Determine the device serial: prefer the serial from serialport
+        // (USB descriptor), fall back to rusb reading, then "unknown".
+        let serial = if usb_serial != "unknown" {
+            usb_serial.clone()
+        } else if let Some(rusb_serial) = usb_info.and_then(|i| i.serial) {
+            debug!(
+                "Using rusb fallback serial: {} (serialport returned None)",
+                rusb_serial
+            );
+            rusb_serial
+        } else {
+            "unknown".to_string()
+        };
 
         let device = if ports.len() >= 2 {
             // Dual CDC: first port = CDC0 (debug), second = CDC1 (shell)
             debug!(
-                "Device: dual CDC — CDC0={}, CDC1={} — mode={}",
-                ports[0].path, ports[1].path, mode
+                "Device: dual CDC — CDC0={}, CDC1={} — serial={} — mode={}",
+                ports[0].path, ports[1].path, serial, mode
             );
             AttentioDevice {
-                serial: "unknown".to_string(), // Will be queried from settings
+                serial,
                 device_type,
                 product: None, // Will be queried from settings
                 mode,
@@ -504,9 +517,12 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
             }
         } else {
             // Single CDC: treat as shell port
-            debug!("Device: single CDC — {} — mode={}", ports[0].path, mode);
+            debug!(
+                "Device: single CDC — {} — serial={} — mode={}",
+                ports[0].path, serial, mode
+            );
             AttentioDevice {
-                serial: "unknown".to_string(), // Will be queried from settings
+                serial,
                 device_type,
                 product: None, // Will be queried from settings
                 mode,

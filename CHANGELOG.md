@@ -13,10 +13,23 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
-## [Development] (2026-03-19)
+## [Development] (2026-03-29)
 
 Added
 
+- **Device identity from USB serial descriptor** — Device serial number is now read
+  from the USB iSerialNumber descriptor (24-char chip UID) instead of querying the
+  shell `metadata get serial_number` command. This works in both Normal and Bootloader
+  (DFU) modes and eliminates the need for a shell connection to identify devices.
+- **`rusb` fallback for serial number on Linux** — When `serialport` does not expose
+  the USB serial string (common on Linux), the discovery module falls back to `rusb`
+  direct USB enumeration to read the iSerialNumber descriptor.
+- **DFU serial filtering** — All DFU operations (`dfu`, `dfu-enter`, `bootloader-enter`)
+  now filter by USB serial number to target the correct device when multiple devices are
+  connected. New `open_dfu_by_serial()` helper opens a specific DFU device by serial.
+- **Pure DFU device serial numbers** — `find_dfu_only_devices()` now reads the USB
+  serial descriptor via `rusb`, so devices in bootloader mode display their serial in
+  `attentio list`.
 - **DFU firmware flashing (`dfu <firmware.bin>`)** — full implementation with:
   - Firmware header validation (magic, VID/PID, size checks)
   - Auto-enters bootloader mode if device is running normal application
@@ -79,6 +92,9 @@ Added
 
 Changed
 
+- **`query_device_info()` simplified** — No longer queries `metadata get serial_number`
+  from the device shell. Serial number comes from USB descriptor; only `device_name` is
+  still queried from shell settings.
 - **`list` command output reorganized** — new columns: DEVICE TYPE (USB product string),
   DEVICE NAME (user-assigned), STATUS (Normal/Bootloader), USB LOCATION. The previous
   "TYPE" column (dual/single CDC) is removed.

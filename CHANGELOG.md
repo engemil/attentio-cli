@@ -13,6 +13,30 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-04-09)
+
+Added
+
+- **Lightweight device enumeration (`find_devices_fast()`)** — new synchronous device
+  discovery function that uses USB enumeration only, without opening serial ports or
+  querying the shell. Used by DFU wait loops to avoid 4+ second delays per poll cycle
+  that caused the 10-second timeouts to overshoot.
+
+Changed
+
+- **DFU enter uses AP binary protocol** — `dfu-enter` and `dfu` (auto-enter) now send a
+  raw 4-byte Attentio Protocol packet (`[0xA5, 0x01, 0x70, 0x42]`) on CDC1 instead of
+  the ChibiOS shell `dfu` text command. Required because the firmware no longer has a
+  shell — CDC1 is now exclusively the AP binary interface.
+
+Fixed
+
+- **DFU wait timeouts overshooting** — `wait_for_dfu_device()` and `wait_for_normal_device()`
+  were calling `find_devices()` which opens serial ports and queries the shell, taking 4+
+  seconds per poll cycle. With a 500ms poll interval and 10s timeout, the actual wait could
+  exceed 40+ seconds before timing out. Both functions now use `find_devices_fast()` for
+  sub-second polling.
+
 ## [Development] (2026-03-29)
 
 Added

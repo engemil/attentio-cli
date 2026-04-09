@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::device::config::{ATTENTIO_PID, ATTENTIO_VID};
 use crate::device::connection::DeviceConnection;
-use crate::device::discovery::{find_devices, resolve_device, DeviceMode};
+use crate::device::discovery::{find_devices, find_devices_fast, resolve_device, DeviceMode};
 use crate::json_output;
 
 // ── Firmware header constants ────────────────────────────────────────────────
@@ -155,7 +155,13 @@ pub async fn execute_enter(device: Option<&str>, json: bool) -> Result<()> {
     }
 }
 
-/// Internal: send the `dfu` shell command to reboot the device into bootloader.
+/// Internal: send the AP DFU_ENTER command to reboot the device into bootloader.
+///
+/// The firmware no longer has a ChibiOS shell — DFU enter is handled via
+/// the Attentio Protocol (AP) binary interface on CDC1 (shell_port).
+/// We send a raw 4-byte AP packet: [SYNC=0xA5, LEN=0x01, CMD=0x70, CRC8=0x42].
+/// The device writes 0xDEADBEEF to RAM and triggers NVIC_SystemReset()
+/// immediately — the USB connection will drop with no response.
 ///
 /// Returns the device serial number on success.
 async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
@@ -178,30 +184,31 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     let serial = dev.serial.clone();
     info!("Sending DFU enter command to {} on {}", serial, port_path);
 
-    // Open connection and send the `dfu` shell command.
-    // The firmware writes 0xDEADBEEF to RAM and triggers NVIC_SystemReset()
-    // immediately — the USB connection will drop with no response.
+    // Open connection and send the AP DFU_ENTER packet.
+    // AP packet format: [SYNC 0xA5] [LEN] [CMD] [CRC8]
+    // DFU_ENTER (0x70) has no payload, so LEN=1.
+    // CRC-8/CCITT(poly=0x07, init=0x00) over [LEN=0x01, CMD=0x70] = 0x42.
+    const AP_DFU_ENTER_PACKET: [u8; 4] = [0xA5, 0x01, 0x70, 0x42];
+
     let mut conn = DeviceConnection::open(&port_path)
         .context(format!("failed to open serial port {}", port_path))?;
 
-    conn.sync_shell()
-        .await
-        .context("failed to sync with device shell")?;
+    // Brief delay so the CDC ACM link is up.
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Send the `dfu` command — expect the connection to drop.
-    match conn.send_command("dfu").await {
+    // Send the raw AP binary packet — the device will reboot immediately.
+    match conn.write_raw(&AP_DFU_ENTER_PACKET).await {
         Ok(_) => {
-            // Unlikely but fine — device responded before rebooting.
-            debug!("device responded to dfu command before rebooting");
+            debug!("AP DFU_ENTER packet sent successfully");
         }
         Err(e) => {
-            // Expected: connection closes because device reboots immediately.
+            // The device may reboot so fast that the write fails — that's OK.
             let err_str = format!("{}", e);
-            if err_str.contains("connection closed") || err_str.contains("timed out") {
-                debug!("device rebooted as expected: {}", e);
+            if err_str.contains("Broken pipe") || err_str.contains("connection") {
+                debug!("device rebooted during write (expected): {}", e);
             } else {
                 return Err(anyhow::anyhow!(
-                    "unexpected error sending dfu command: {}",
+                    "unexpected error sending DFU enter command: {}",
                     e
                 ));
             }
@@ -224,11 +231,14 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
 ///
 /// If `serial` is provided, waits for a bootloader device with that serial.
 /// Otherwise waits for any bootloader device.
+///
+/// Uses lightweight enumeration (no shell queries) since we only need to
+/// detect device presence and mode.
 async fn wait_for_dfu_device(serial: Option<&str>) -> Result<()> {
     let start = Instant::now();
 
     loop {
-        let devices = find_devices().await.unwrap_or_default();
+        let devices = find_devices_fast().unwrap_or_default();
         let found = devices
             .iter()
             .any(|d| d.mode == DeviceMode::Bootloader && serial.is_none_or(|s| d.serial == s));
@@ -257,11 +267,17 @@ async fn wait_for_dfu_device(serial: Option<&str>) -> Result<()> {
 ///
 /// If `serial` is provided, waits for a normal device with that serial.
 /// Otherwise waits for any normal device.
+///
+/// Uses lightweight enumeration (no shell queries) to avoid blocking on
+/// serial port I/O while waiting for the device to reboot. Shell queries
+/// can take several seconds each when the firmware doesn't respond (e.g.,
+/// no shell, or firmware still initializing), which would cause the timeout
+/// to overshoot significantly.
 async fn wait_for_normal_device(serial: Option<&str>) -> Result<()> {
     let start = Instant::now();
 
     loop {
-        let devices = find_devices().await.unwrap_or_default();
+        let devices = find_devices_fast().unwrap_or_default();
         let found = devices
             .iter()
             .any(|d| d.mode == DeviceMode::Normal && serial.is_none_or(|s| d.serial == s));

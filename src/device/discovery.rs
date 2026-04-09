@@ -159,6 +159,42 @@ fn detect_device_mode(product: Option<&String>) -> DeviceMode {
 /// For devices in Normal mode with shell ports, queries device settings
 /// (device name) from the device.
 pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
+    find_devices_inner(true).await
+}
+
+/// Lightweight device discovery without opening serial ports.
+///
+/// Same as [`find_devices()`] but skips querying device settings (device name)
+/// over the shell port. Useful when only the device's presence, mode, and
+/// serial number are needed (e.g., polling for device re-enumeration after
+/// DFU flash).
+pub fn find_devices_fast() -> Result<Vec<AttentioDevice>, AttentioError> {
+    let ports = serialport::available_ports().map_err(AttentioError::Serial)?;
+
+    debug!("Found {} total serial ports (fast)", ports.len());
+    trace!("All ports: {:#?}", ports);
+
+    let mut devices = devices_from_ports(ports);
+
+    // Also check for DFU-only (Bootloader) devices (no serial ports)
+    match find_dfu_only_devices() {
+        Ok(dfu_devices) => {
+            debug!("Found {} DFU-only devices", dfu_devices.len());
+            devices.extend(dfu_devices);
+        }
+        Err(e) => {
+            warn!("Failed to enumerate USB devices for DFU detection: {}", e);
+        }
+    }
+
+    // Sort by serial for deterministic output
+    devices.sort_by(|a, b| a.serial.cmp(&b.serial));
+
+    Ok(devices)
+}
+
+/// Inner implementation shared by `find_devices` and `find_devices_fast`.
+async fn find_devices_inner(query_settings: bool) -> Result<Vec<AttentioDevice>, AttentioError> {
     let ports = serialport::available_ports().map_err(AttentioError::Serial)?;
 
     debug!("Found {} total serial ports", ports.len());
@@ -178,10 +214,12 @@ pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
     }
 
     // Query settings from Normal mode devices (sequentially)
-    for device in &mut devices {
-        if device.mode == DeviceMode::Normal {
-            if let Some(shell_port) = device.shell_port().map(|s| s.to_string()) {
-                query_device_info(device, &shell_port).await;
+    if query_settings {
+        for device in &mut devices {
+            if device.mode == DeviceMode::Normal {
+                if let Some(shell_port) = device.shell_port().map(|s| s.to_string()) {
+                    query_device_info(device, &shell_port).await;
+                }
             }
         }
     }

@@ -7,3 +7,4 @@ pub mod set;
 pub mod settings;
 pub mod status;
 pub mod tui;
+pub mod version;

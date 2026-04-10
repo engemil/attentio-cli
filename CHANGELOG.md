@@ -17,6 +17,10 @@ Note: Update `Cargo.toml` when publishing new version.
 
 Added
 
+- **`version` subcommand** — `attentio version` prints the CLI version (`attentio <version>`).
+  Supports `--json` flag for machine-readable output (`{"status":"OK","version":"..."}`).
+  The existing `attentio --version` flag continues to work as before via clap.
+
 - **Session control commands** — `claim`, `release`, `ping`, and `session`:
   - `attentio claim` — sends AP CLAIM (0x01) to take control of the device (enters remote mode).
   - `attentio release` — sends AP RELEASE (0x02) to return device to standalone mode.

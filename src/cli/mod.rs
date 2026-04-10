@@ -87,6 +87,9 @@ pub enum Command {
         #[command(subcommand)]
         action: PowerAction,
     },
+
+    /// Print CLI version information.
+    Version,
 }
 
 /// Subcommands for `attentio settings`.

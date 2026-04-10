@@ -163,6 +163,10 @@ attentio tui [--device <#|serial>]                                      # TUI da
 attentio [--json] dfu <firmware.bin> [--device <#|serial>]              # Flash firmware via DFU (auto-enters bootloader if needed)
 attentio [--json] dfu-enter [--device <#|serial>]                       # Enter DFU bootloader mode
 attentio [--json] bootloader-enter [--device <#|serial>]                # Same as "dfu-enter"
+
+# Version
+attentio --version                                                      # Print CLI version (flag)
+attentio [--json] version                                               # Print CLI version (subcommand)
 ```
 
 **Note:** Commands that modify device state (LED, power, settings set) require a _claim_.

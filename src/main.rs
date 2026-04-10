@@ -74,6 +74,9 @@ async fn main() -> Result<()> {
         Command::Power { action } => {
             cli::commands::power::execute(action, global_device, cli.json).await
         }
+
+        // Version info
+        Command::Version => cli::commands::version::execute(cli.json).await,
     };
 
     // Handle errors: format as JSON if --json flag is set

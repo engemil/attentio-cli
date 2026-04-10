@@ -11,17 +11,61 @@ use crate::device::connection::DeviceConnection;
 use crate::error::AttentioError;
 
 use super::packet::{
-    ap_error_name, build_packet, ApParser, ApResponse, CMD_GET_METADATA, CMD_SETTINGS_GET,
-    CMD_SETTINGS_LIST, CMD_SETTINGS_SET,
+    ap_error_name, build_packet, ApParser, ApResponse, CMD_CLAIM, CMD_GET_METADATA,
+    CMD_GET_SESSION, CMD_GET_STATE, CMD_LED_OFF, CMD_PING, CMD_POWER_OFF, CMD_POWER_ON,
+    CMD_RELEASE, CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET, CMD_SET_BRIGHTNESS,
+    CMD_SET_HSV, CMD_SET_RGB,
 };
 
 /// Default timeout for AP command responses.
 const AP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Parsed device state from GET_STATE response.
+#[derive(Debug, Clone)]
+pub struct DeviceState {
+    pub system_state: u8,
+    pub current_r: u8,
+    pub current_g: u8,
+    pub current_b: u8,
+    pub brightness: u8,
+    pub control_mode: u8,
+    pub active_controller: u8,
+    pub standalone_mode: u8,
+}
+
+/// Parsed session info from GET_SESSION response.
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub mode: u8,
+    pub active_controller: u8,
+}
+
+/// Human-readable name for control mode byte.
+pub fn control_mode_name(mode: u8) -> &'static str {
+    match mode {
+        0 => "STANDALONE",
+        1 => "REMOTE",
+        _ => "UNKNOWN",
+    }
+}
+
+/// Human-readable name for interface ID byte.
+pub fn interface_name(id: u8) -> &'static str {
+    match id {
+        0 => "NONE",
+        1 => "STANDALONE",
+        2 => "USB",
+        3 => "BLE",
+        4 => "WiFi",
+        _ => "UNKNOWN",
+    }
+}
+
 /// AP protocol client wrapping a serial connection.
 pub struct ApClient {
     conn: DeviceConnection,
     timeout: Duration,
+    claimed: bool,
 }
 
 impl ApClient {
@@ -30,6 +74,7 @@ impl ApClient {
         Self {
             conn,
             timeout: AP_RESPONSE_TIMEOUT,
+            claimed: false,
         }
     }
 
@@ -130,7 +175,46 @@ impl ApClient {
         }
     }
 
-    // ── High-level commands ──────────────────────────────────────────────────
+    // ── Session commands ─────────────────────────────────────────────────────
+
+    /// Claim control of the device (CLAIM 0x01).
+    ///
+    /// Transitions device from STANDALONE to REMOTE mode (or takes over from
+    /// another controller). After a successful claim, the client can issue
+    /// commands that require claim (LED, power, settings set).
+    pub async fn claim(&mut self) -> Result<(), AttentioError> {
+        self.send_command_ok(CMD_CLAIM, &[]).await?;
+        self.claimed = true;
+        Ok(())
+    }
+
+    /// Release control of the device (RELEASE 0x02).
+    ///
+    /// Returns device to STANDALONE mode.
+    pub async fn release(&mut self) -> Result<(), AttentioError> {
+        self.send_command_ok(CMD_RELEASE, &[]).await?;
+        self.claimed = false;
+        Ok(())
+    }
+
+    /// Ping the device (PING 0x03).
+    pub async fn ping(&mut self) -> Result<(), AttentioError> {
+        self.send_command_ok(CMD_PING, &[]).await?;
+        Ok(())
+    }
+
+    /// Ensure the device is claimed before issuing a claim-required command.
+    ///
+    /// Sends CLAIM if not already claimed in this session. The claim is kept
+    /// active until explicitly released.
+    pub async fn ensure_claimed(&mut self) -> Result<(), AttentioError> {
+        if !self.claimed {
+            self.claim().await?;
+        }
+        Ok(())
+    }
+
+    // ── Query commands ───────────────────────────────────────────────────────
 
     /// Query device metadata (GET_METADATA 0x43).
     ///
@@ -141,6 +225,111 @@ impl ApClient {
         let payload = self.send_command_ok(CMD_GET_METADATA, &[]).await?;
         parse_kv_list(&payload)
     }
+
+    /// Query device state (GET_STATE 0x40).
+    ///
+    /// Returns the current device state including RGB, brightness, mode, etc.
+    pub async fn get_state(&mut self) -> Result<DeviceState, AttentioError> {
+        let payload = self.send_command_ok(CMD_GET_STATE, &[]).await?;
+        if payload.len() < 8 {
+            return Err(AttentioError::Protocol {
+                message: format!(
+                    "GET_STATE response too short: {} bytes (expected 8)",
+                    payload.len()
+                ),
+            });
+        }
+        Ok(DeviceState {
+            system_state: payload[0],
+            current_r: payload[1],
+            current_g: payload[2],
+            current_b: payload[3],
+            brightness: payload[4],
+            control_mode: payload[5],
+            active_controller: payload[6],
+            standalone_mode: payload[7],
+        })
+    }
+
+    /// Query session info (GET_SESSION 0x42).
+    ///
+    /// Returns control mode and active controller.
+    pub async fn get_session(&mut self) -> Result<SessionInfo, AttentioError> {
+        let payload = self.send_command_ok(CMD_GET_SESSION, &[]).await?;
+        if payload.len() < 2 {
+            return Err(AttentioError::Protocol {
+                message: format!(
+                    "GET_SESSION response too short: {} bytes (expected 2)",
+                    payload.len()
+                ),
+            });
+        }
+        Ok(SessionInfo {
+            mode: payload[0],
+            active_controller: payload[1],
+        })
+    }
+
+    // ── LED control commands ─────────────────────────────────────────────────
+
+    /// Set LED color via RGB (SET_RGB 0x21). Requires claim.
+    ///
+    /// Payload: `[R:1][G:1][B:1]` — each 0-255.
+    pub async fn set_rgb(&mut self, r: u8, g: u8, b: u8) -> Result<(), AttentioError> {
+        self.ensure_claimed().await?;
+        self.send_command_ok(CMD_SET_RGB, &[r, g, b]).await?;
+        Ok(())
+    }
+
+    /// Set LED color via HSV (SET_HSV 0x22). Requires claim.
+    ///
+    /// Payload: `[H:2 little-endian][S:1][V:1]` — H=0-359, S=0-100, V=0-100.
+    pub async fn set_hsv(&mut self, h: u16, s: u8, v: u8) -> Result<(), AttentioError> {
+        self.ensure_claimed().await?;
+        let payload = [
+            (h & 0xFF) as u8,        // H low byte
+            ((h >> 8) & 0xFF) as u8, // H high byte
+            s,
+            v,
+        ];
+        self.send_command_ok(CMD_SET_HSV, &payload).await?;
+        Ok(())
+    }
+
+    /// Set LED brightness (SET_BRIGHTNESS 0x23). Requires claim.
+    ///
+    /// Payload: `[brightness:1]` — 0-100 (percentage).
+    pub async fn set_brightness(&mut self, brightness: u8) -> Result<(), AttentioError> {
+        self.ensure_claimed().await?;
+        self.send_command_ok(CMD_SET_BRIGHTNESS, &[brightness])
+            .await?;
+        Ok(())
+    }
+
+    /// Turn LEDs off (LED_OFF 0x20). Requires claim.
+    pub async fn led_off(&mut self) -> Result<(), AttentioError> {
+        self.ensure_claimed().await?;
+        self.send_command_ok(CMD_LED_OFF, &[]).await?;
+        Ok(())
+    }
+
+    // ── Power commands ───────────────────────────────────────────────────────
+
+    /// Power on the device (POWER_ON 0x10). Requires claim.
+    pub async fn power_on(&mut self) -> Result<(), AttentioError> {
+        self.ensure_claimed().await?;
+        self.send_command_ok(CMD_POWER_ON, &[]).await?;
+        Ok(())
+    }
+
+    /// Power off the device (POWER_OFF 0x11). Requires claim.
+    pub async fn power_off(&mut self) -> Result<(), AttentioError> {
+        self.ensure_claimed().await?;
+        self.send_command_ok(CMD_POWER_OFF, &[]).await?;
+        Ok(())
+    }
+
+    // ── Settings commands ────────────────────────────────────────────────────
 
     /// List all settings (SETTINGS_LIST 0x50).
     ///
@@ -163,11 +352,13 @@ impl ApClient {
         parse_kv_single(&payload)
     }
 
-    /// Set a setting (SETTINGS_SET 0x52).
+    /// Set a setting (SETTINGS_SET 0x52). Requires claim (auto-claims).
     ///
     /// Request payload: `[key_len:1][key][val_len:1][val]`
     /// Response: bare OK (no payload).
     pub async fn settings_set(&mut self, key: &str, value: &str) -> Result<(), AttentioError> {
+        self.ensure_claimed().await?;
+
         let mut req = Vec::with_capacity(2 + key.len() + value.len());
         req.push(key.len() as u8);
         req.extend_from_slice(key.as_bytes());

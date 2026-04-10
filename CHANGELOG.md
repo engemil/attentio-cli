@@ -17,6 +17,57 @@ Note: Update `Cargo.toml` when publishing new version.
 
 Added
 
+- **Session control commands** — `claim`, `release`, `ping`, and `session`:
+  - `attentio claim` — sends AP CLAIM (0x01) to take control of the device (enters remote mode).
+  - `attentio release` — sends AP RELEASE (0x02) to return device to standalone mode.
+  - `attentio ping` — sends AP PING (0x03) keep-alive, reports round-trip time in ms.
+  - `attentio session` — sends AP GET_SESSION (0x42) to display control mode and active controller.
+
+- **LED control commands** — `set rgb`, `set hsv`, `set brightness`, `set off`:
+  - `attentio set rgb <r> <g> <b>` — sends AP SET_RGB (0x21) with 3-byte payload.
+  - `attentio set hsv <h> <s> <v>` — sends AP SET_HSV (0x22) with 4-byte payload (H little-endian u16, S/V u8).
+  - `attentio set brightness <val>` — sends AP SET_BRIGHTNESS (0x23) with 1-byte percentage (0-100).
+  - `attentio set off` — sends AP LED_OFF (0x20) to turn LEDs off.
+
+- **Power control commands** — `power on`, `power off`:
+  - `attentio power on` — sends AP POWER_ON (0x10) to wake from low-power mode.
+  - `attentio power off` — sends AP POWER_OFF (0x11) to enter low-power mode.
+
+- **Device status command** — `attentio status` sends AP GET_STATE (0x40) and displays
+  system state, current RGB, brightness, control mode, active controller, and standalone mode.
+
+- **Auto-claim for claim-required commands** — the `ApClient` tracks claim state and
+  automatically sends CLAIM before commands that require it (LED control, power control,
+  settings set). The claim is kept active until explicitly released. This fixes the
+  `ERR_NOT_CONTROLLER` (0x01) error that occurred when running `settings set` without
+  a prior claim.
+
+- **AP command constants** — added all missing command IDs to `packet.rs`: `CMD_CLAIM` (0x01),
+  `CMD_RELEASE` (0x02), `CMD_PING` (0x03), `CMD_POWER_ON` (0x10), `CMD_POWER_OFF` (0x11),
+  `CMD_LED_OFF` (0x20), `CMD_SET_RGB` (0x21), `CMD_SET_HSV` (0x22), `CMD_SET_BRIGHTNESS` (0x23),
+  `CMD_GET_STATE` (0x40), `CMD_GET_SESSION` (0x42), and event IDs `CMD_EVT_BUTTON` (0x80),
+  `CMD_EVT_STATE_CHANGE` (0x81), `CMD_EVT_SESSION_END` (0x82).
+
+- **`ApClient` high-level methods** — `claim()`, `release()`, `ping()`, `ensure_claimed()`,
+  `get_state()`, `get_session()`, `set_rgb()`, `set_hsv()`, `set_brightness()`, `led_off()`,
+  `power_on()`, `power_off()`. Includes `DeviceState` and `SessionInfo` response structs.
+
+Changed
+
+- **`settings set` now auto-claims** — `ApClient::settings_set()` calls `ensure_claimed()`
+  internally, so `attentio settings set loglevel 4` works without a manual `attentio claim` first.
+
+Removed
+
+- **`led` command stub** — replaced by `set rgb`, `set hsv`, `set brightness`, and `set off`
+  commands matching the design document command matrix.
+
+---
+
+## [Development] (2026-04-10)
+
+Added
+
 - **Attentio Protocol (AP) client library (`src/protocol/`)** — new module implementing
   the client side of the AP for communicating with the device over CDC1:
   - `crc.rs` — CRC-8/CCITT lookup table and `crc8()` function (identical to firmware table).

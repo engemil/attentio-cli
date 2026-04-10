@@ -34,16 +34,6 @@ pub enum Command {
         device: Option<String>,
     },
 
-    /// Control LED mode and settings.
-    Led {
-        /// LED mode (e.g. pulse, solid, rainbow).
-        mode: String,
-
-        /// Additional LED options (color, brightness, speed).
-        #[arg(trailing_var_arg = true)]
-        options: Vec<String>,
-    },
-
     /// Flash firmware via DFU.
     Dfu {
         /// Path to firmware binary file.
@@ -69,6 +59,33 @@ pub enum Command {
     Settings {
         #[command(subcommand)]
         action: Option<SettingsAction>,
+    },
+
+    /// Claim control of the device (enter remote mode).
+    Claim,
+
+    /// Release control of the device (return to standalone mode).
+    Release,
+
+    /// Ping the device (keep-alive check).
+    Ping,
+
+    /// Show session info (control mode and active controller).
+    Session,
+
+    /// Query device status (state, color, brightness, mode).
+    Status,
+
+    /// Set LED color, brightness, or turn LEDs off.
+    Set {
+        #[command(subcommand)]
+        action: SetAction,
+    },
+
+    /// Control device power.
+    Power {
+        #[command(subcommand)]
+        action: PowerAction,
     },
 }
 
@@ -103,4 +120,46 @@ pub enum SettingsAction {
         /// Input file path.
         file: String,
     },
+}
+
+/// Subcommands for `attentio set`.
+#[derive(Debug, Subcommand)]
+pub enum SetAction {
+    /// Set LED color using RGB values (0-255 each).
+    Rgb {
+        /// Red value (0-255).
+        r: u8,
+        /// Green value (0-255).
+        g: u8,
+        /// Blue value (0-255).
+        b: u8,
+    },
+
+    /// Set LED color using HSV values.
+    Hsv {
+        /// Hue (0-359).
+        h: u16,
+        /// Saturation (0-100).
+        s: u8,
+        /// Value/brightness (0-100).
+        v: u8,
+    },
+
+    /// Set LED brightness (0-100%).
+    Brightness {
+        /// Brightness percentage (0-100).
+        value: u8,
+    },
+
+    /// Turn LEDs off.
+    Off,
+}
+
+/// Subcommands for `attentio power`.
+#[derive(Debug, Subcommand)]
+pub enum PowerAction {
+    /// Power on (wake from low-power mode).
+    On,
+    /// Power off (enter low-power mode).
+    Off,
 }

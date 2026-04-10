@@ -1,6 +1,9 @@
 pub mod dfu;
-pub mod led;
 pub mod list;
 pub mod metadata;
+pub mod power;
+pub mod session;
+pub mod set;
 pub mod settings;
+pub mod status;
 pub mod tui;

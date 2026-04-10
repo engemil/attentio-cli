@@ -18,11 +18,41 @@ pub const MAX_PAYLOAD_LEN: usize = 252;
 
 // ── Command IDs ──────────────────────────────────────────────────────────────
 
+// Session control (0x00-0x0F)
+pub const CMD_CLAIM: u8 = 0x01;
+pub const CMD_RELEASE: u8 = 0x02;
+pub const CMD_PING: u8 = 0x03;
+
+// Power control (0x10-0x1F)
+pub const CMD_POWER_ON: u8 = 0x10;
+pub const CMD_POWER_OFF: u8 = 0x11;
+
+// Direct LED control (0x20-0x2F)
+pub const CMD_LED_OFF: u8 = 0x20;
+pub const CMD_SET_RGB: u8 = 0x21;
+pub const CMD_SET_HSV: u8 = 0x22;
+pub const CMD_SET_BRIGHTNESS: u8 = 0x23;
+
+// Query (0x40-0x4F)
+pub const CMD_GET_STATE: u8 = 0x40;
+pub const CMD_GET_SESSION: u8 = 0x42;
 pub const CMD_GET_METADATA: u8 = 0x43;
+
+// Settings (0x50-0x5F)
 pub const CMD_SETTINGS_LIST: u8 = 0x50;
 pub const CMD_SETTINGS_GET: u8 = 0x51;
 pub const CMD_SETTINGS_SET: u8 = 0x52;
+
+// DFU (0x70-0x7F)
 pub const CMD_DFU_ENTER: u8 = 0x70;
+
+// Events (0x80-0x8F) — Device -> Host (used by future `monitor` command)
+#[allow(dead_code)]
+pub const CMD_EVT_BUTTON: u8 = 0x80;
+#[allow(dead_code)]
+pub const CMD_EVT_STATE_CHANGE: u8 = 0x81;
+#[allow(dead_code)]
+pub const CMD_EVT_SESSION_END: u8 = 0x82;
 
 /// Response OK — returned by the device on success.
 pub const CMD_OK: u8 = 0xF0;

@@ -40,10 +40,6 @@ async fn main() -> Result<()> {
             cli::commands::tui::execute(device).await
         }
 
-        Command::Led { mode, options } => {
-            cli::commands::led::execute(mode, options, global_device, cli.json).await
-        }
-
         Command::Dfu { firmware, device } => {
             let device = device.as_deref().or(global_device);
             cli::commands::dfu::execute(firmware, device, cli.json).await
@@ -58,6 +54,25 @@ async fn main() -> Result<()> {
 
         Command::Settings { action } => {
             cli::commands::settings::execute(action.as_ref(), global_device, cli.json).await
+        }
+
+        // Session control
+        Command::Claim => cli::commands::session::execute_claim(global_device, cli.json).await,
+        Command::Release => cli::commands::session::execute_release(global_device, cli.json).await,
+        Command::Ping => cli::commands::session::execute_ping(global_device, cli.json).await,
+        Command::Session => cli::commands::session::execute_session(global_device, cli.json).await,
+
+        // Device status
+        Command::Status => cli::commands::status::execute(global_device, cli.json).await,
+
+        // LED control
+        Command::Set { action } => {
+            cli::commands::set::execute(action, global_device, cli.json).await
+        }
+
+        // Power control
+        Command::Power { action } => {
+            cli::commands::power::execute(action, global_device, cli.json).await
         }
     };
 

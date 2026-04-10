@@ -126,19 +126,48 @@ Debug prints dashboard: full-height view of CDC0 debug output stream.
 ### Commands
 
 ```bash
+# Device discovery
 attentio [--json] list                                                  # List connected devices (index, name, type, status, serial, ports)
+
+# Device info
 attentio [--json] metadata [--device <#|serial>]                        # Query device metadata (firmware version, build date, platform, etc.)
+attentio [--json] status [--device <#|serial>]                          # Query device state (color, brightness, mode, controller)
+
+# Session control
+attentio [--json] claim [--device <#|serial>]                           # Claim control (enter remote mode)
+attentio [--json] release [--device <#|serial>]                         # Release control (return to standalone mode)
+attentio [--json] ping [--device <#|serial>]                            # Ping device (keep-alive check)
+attentio [--json] session [--device <#|serial>]                         # Show session info (mode, active controller)
+
+# LED control (auto-claims if needed)
+attentio [--json] set rgb <r> <g> <b> [--device <#|serial>]             # Set LED color (RGB 0-255)
+attentio [--json] set hsv <h> <s> <v> [--device <#|serial>]             # Set LED color (H:0-359, S:0-100, V:0-100)
+attentio [--json] set brightness <val> [--device <#|serial>]            # Set LED brightness (0-100%)
+attentio [--json] set off [--device <#|serial>]                         # Turn LEDs off
+
+# Power control (auto-claims if needed)
+attentio [--json] power on [--device <#|serial>]                        # Wake from low-power mode
+attentio [--json] power off [--device <#|serial>]                       # Enter low-power mode
+
+# Settings (set/load auto-claim if needed)
 attentio [--json] settings list [--device <#|serial>]                   # List all device settings
 attentio [--json] settings get <key> [--device <#|serial>]              # Get a single setting value
 attentio [--json] settings set <key> <value> [--device <#|serial>]      # Set a setting value
 attentio [--json] settings save <file.json> [--device <#|serial>]       # Save all settings to JSON file
-attentio [--json] settings load <file.json> [--device <#|serial>]       # Load settings from JSON file and apply to device
-attentio led <mode> [options] [--device <#|serial>]                     # LED mode/settings (planned)
+attentio [--json] settings load <file.json> [--device <#|serial>]       # Load settings from JSON file and apply
+
+# Interactive
 attentio tui [--device <#|serial>]                                      # TUI dashboard (debug prints, auto-reconnect)
-attentio dfu <firmware.bin> [--device <#|serial>]                       # Flash firmware via DFU (auto-enters bootloader if needed)
-attentio dfu-enter [--device <#|serial>]                                # Enter DFU bootloader mode
-attentio bootloader-enter [--device <#|serial>]                         # Same as "dfu-enter"
+
+# Firmware update
+attentio [--json] dfu <firmware.bin> [--device <#|serial>]              # Flash firmware via DFU (auto-enters bootloader if needed)
+attentio [--json] dfu-enter [--device <#|serial>]                       # Enter DFU bootloader mode
+attentio [--json] bootloader-enter [--device <#|serial>]                # Same as "dfu-enter"
 ```
+
+**Note:** Commands that modify device state (LED, power, settings set) require a _claim_.
+The CLI auto-claims transparently on first use. The claim stays active until you run
+`attentio release` or disconnect.
 
 #### Settings File Format
 

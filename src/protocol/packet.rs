@@ -37,6 +37,7 @@ pub const CMD_SET_BRIGHTNESS: u8 = 0x23;
 pub const CMD_GET_STATE: u8 = 0x40;
 pub const CMD_GET_SESSION: u8 = 0x42;
 pub const CMD_GET_METADATA: u8 = 0x43;
+pub const CMD_METADATA_GET: u8 = 0x44;
 
 // Settings (0x50-0x5F)
 pub const CMD_SETTINGS_LIST: u8 = 0x50;

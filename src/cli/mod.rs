@@ -53,7 +53,10 @@ pub enum Command {
     },
 
     /// Query device metadata (firmware version, build info, etc.).
-    Metadata,
+    Metadata {
+        #[command(subcommand)]
+        action: Option<MetadataAction>,
+    },
 
     /// Manage device settings.
     Settings {
@@ -90,6 +93,19 @@ pub enum Command {
 
     /// Print CLI version information.
     Version,
+}
+
+/// Subcommands for `attentio metadata`.
+#[derive(Debug, Subcommand)]
+pub enum MetadataAction {
+    /// List all metadata fields (default when no subcommand given).
+    List,
+
+    /// Get the value of a single metadata field.
+    Get {
+        /// Metadata key name (e.g. "firmware_version", "serial_number", "uptime").
+        key: String,
+    },
 }
 
 /// Subcommands for `attentio settings`.

@@ -12,9 +12,9 @@ use crate::error::AttentioError;
 
 use super::packet::{
     ap_error_name, build_packet, ApParser, ApResponse, CMD_CLAIM, CMD_GET_METADATA,
-    CMD_GET_SESSION, CMD_GET_STATE, CMD_LED_OFF, CMD_PING, CMD_POWER_OFF, CMD_POWER_ON,
-    CMD_RELEASE, CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET, CMD_SET_BRIGHTNESS,
-    CMD_SET_HSV, CMD_SET_RGB,
+    CMD_GET_SESSION, CMD_GET_STATE, CMD_LED_OFF, CMD_METADATA_GET, CMD_PING, CMD_POWER_OFF,
+    CMD_POWER_ON, CMD_RELEASE, CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET,
+    CMD_SET_BRIGHTNESS, CMD_SET_HSV, CMD_SET_RGB,
 };
 
 /// Default timeout for AP command responses.
@@ -216,14 +216,43 @@ impl ApClient {
 
     // ── Query commands ───────────────────────────────────────────────────────
 
-    /// Query device metadata (GET_METADATA 0x43).
+    /// Query device metadata (GET_METADATA 0x43) with pagination.
     ///
-    /// Returns a list of (key, value) pairs. The response payload uses the
-    /// count-prefixed key-value format:
-    /// `[count:1] { [key_len:1][key][val_len:1][val] } * count`
+    /// Fetches all pages and returns the full list of (key, value) pairs.
+    /// Response payload per page:
+    /// `[total_count:1][page:1][page_count:1] { [key_len:1][key][val_len:1][val] } * page_count`
     pub async fn get_metadata(&mut self) -> Result<Vec<(String, String)>, AttentioError> {
-        let payload = self.send_command_ok(CMD_GET_METADATA, &[]).await?;
-        parse_kv_list(&payload)
+        let mut all_entries = Vec::new();
+        let mut page: u8 = 0;
+
+        loop {
+            let payload = self.send_command_ok(CMD_GET_METADATA, &[page]).await?;
+            let (total, _current_page, entries) = parse_kv_paginated(&payload)?;
+            all_entries.extend(entries);
+
+            if all_entries.len() >= total as usize {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(all_entries)
+    }
+
+    /// Get a single metadata field by key (METADATA_GET 0x44).
+    ///
+    /// Request payload: `[key_len:1][key]`
+    /// Response payload: `[key_len:1][key][val_len:1][val]` (single pair, no count).
+    pub async fn get_metadata_field(
+        &mut self,
+        key: &str,
+    ) -> Result<(String, String), AttentioError> {
+        let mut req = Vec::with_capacity(1 + key.len());
+        req.push(key.len() as u8);
+        req.extend_from_slice(key.as_bytes());
+
+        let payload = self.send_command_ok(CMD_METADATA_GET, &req).await?;
+        parse_kv_single(&payload)
     }
 
     /// Query device state (GET_STATE 0x40).
@@ -396,6 +425,45 @@ fn parse_kv_list(data: &[u8]) -> Result<Vec<(String, String)>, AttentioError> {
     }
 
     Ok(entries)
+}
+
+/// Parse a paginated key-value list from an AP GET_METADATA response payload.
+///
+/// Format: `[total_count:1][page:1][page_count:1] { [key_len:1][key][val_len:1][val] } * page_count`
+///
+/// Returns `(total_count, page, entries)`.
+fn parse_kv_paginated(data: &[u8]) -> Result<(u8, u8, Vec<(String, String)>), AttentioError> {
+    if data.len() < 3 {
+        return Err(AttentioError::Protocol {
+            message: format!(
+                "paginated key-value payload too short: {} bytes (need at least 3)",
+                data.len()
+            ),
+        });
+    }
+
+    let total_count = data[0];
+    let page = data[1];
+    let page_count = data[2] as usize;
+    let mut pos = 3;
+    let mut entries = Vec::with_capacity(page_count);
+
+    for i in 0..page_count {
+        let (key, value, new_pos) =
+            parse_kv_pair(data, pos).map_err(|msg| AttentioError::Protocol {
+                message: format!(
+                    "paginated key-value entry {}/{} (page {}): {}",
+                    i + 1,
+                    page_count,
+                    page,
+                    msg
+                ),
+            })?;
+        entries.push((key, value));
+        pos = new_pos;
+    }
+
+    Ok((total_count, page, entries))
 }
 
 /// Parse a single key-value pair (no count prefix) from an AP response payload.

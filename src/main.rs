@@ -50,7 +50,9 @@ async fn main() -> Result<()> {
             cli::commands::dfu::execute_enter(device, cli.json).await
         }
 
-        Command::Metadata => cli::commands::metadata::execute(global_device, cli.json).await,
+        Command::Metadata { action } => {
+            cli::commands::metadata::execute(action.as_ref(), global_device, cli.json).await
+        }
 
         Command::Settings { action } => {
             cli::commands::settings::execute(action.as_ref(), global_device, cli.json).await

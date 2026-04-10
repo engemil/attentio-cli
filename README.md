@@ -130,8 +130,9 @@ Debug prints dashboard: full-height view of CDC0 debug output stream.
 attentio [--json] list                                                  # List connected devices (index, name, type, status, serial, ports)
 
 # Device info
-attentio [--json] metadata [--device <#|serial>]                        # Query device metadata (firmware version, build date, platform, etc.)
-attentio [--json] status [--device <#|serial>]                          # Query device state (color, brightness, mode, controller)
+attentio [--json] metadata list [--device <#|serial>]                       # List all device metadata fields
+attentio [--json] metadata get <key> [--device <#|serial>]                  # Get a single metadata field value
+attentio [--json] status [--device <#|serial>]                              # Query device state (color, brightness, mode, controller)
 
 # Session control
 attentio [--json] claim [--device <#|serial>]                           # Claim control (enter remote mode)

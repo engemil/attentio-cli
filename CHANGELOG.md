@@ -17,6 +17,19 @@ Note: Update `Cargo.toml` when publishing new version.
 
 Added
 
+- **`metadata list` / `metadata get <key>` subcommands** — metadata command now supports
+  `list` (default) and `get <key>` subcommands, mirroring the `settings` command pattern.
+  `metadata list` fetches all metadata fields using paginated `GET_METADATA` (0x43).
+  `metadata get <key>` queries a single field using the new `METADATA_GET` (0x44) command.
+  Both support `--json` output.
+
+- **Paginated metadata protocol support** — `get_metadata()` loops over firmware pages
+  using the new `[total_count][page][page_count][KV pairs]` wire format. Added
+  `parse_kv_paginated()` parser and `get_metadata_field()` client method.
+
+- **`CMD_METADATA_GET` (0x44) protocol constant** — new command ID for single-field
+  metadata query in `packet.rs`.
+
 - **`version` subcommand** — `attentio version` prints the CLI version (`attentio <version>`).
   Supports `--json` flag for machine-readable output (`{"status":"OK","version":"..."}`).
   The existing `attentio --version` flag continues to work as before via clap.

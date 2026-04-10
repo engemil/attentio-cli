@@ -1,304 +1,210 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use serde_json::json;
-use std::fs;
-use tracing::info;
 
 use crate::cli::SettingsAction;
-use crate::device::connection::DeviceConnection;
 use crate::device::discovery::resolve_device;
 use crate::json_output;
+use crate::protocol::ApClient;
 
-/// Execute the `settings` command — read/write device settings and presets.
+/// Execute the `settings` command — manage device settings via AP protocol.
+///
+/// Defaults to `list` when no subcommand is specified.
 pub async fn execute(
-    action: &Option<SettingsAction>,
+    action: Option<&SettingsAction>,
     device: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    match action {
-        // Default to list if no action specified
-        None => execute_list(device, json).await,
-
-        Some(SettingsAction::List) => execute_list(device, json).await,
-
-        Some(SettingsAction::Get { key }) => execute_get(key, device, json).await,
-
-        Some(SettingsAction::Set { key, value }) => execute_set(key, value, device, json).await,
-
-        Some(SettingsAction::Save { file }) => execute_save(file, device, json).await,
-
-        Some(SettingsAction::Load { file }) => execute_load(file, device, json).await,
-    }
-}
-
-/// List all settings from the device.
-async fn execute_list(device: Option<&str>, json: bool) -> Result<()> {
     let dev = resolve_device(device)
         .await
         .context("failed to resolve device")?;
+
     let port_path = dev
-        .shell_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
+        .ap_port()
+        .ok_or_else(|| anyhow::anyhow!("device '{}' has no protocol port", dev.serial))?
+        .to_string();
 
-    info!("Connecting to {} on {}", dev.serial, port_path);
+    // Brief delay to let CDC ACM link settle after enumeration.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let mut conn = DeviceConnection::open(port_path)
-        .context(format!("failed to open serial port {}", port_path))?;
+    let mut client = ApClient::open(&port_path)
+        .context(format!("failed to open protocol port {}", port_path))?;
 
-    let response = conn
-        .send_command("settings")
+    match action {
+        None | Some(SettingsAction::List) => execute_list(&mut client, &dev.serial, json).await,
+        Some(SettingsAction::Get { key }) => execute_get(&mut client, key, &dev.serial, json).await,
+        Some(SettingsAction::Set { key, value }) => {
+            execute_set(&mut client, key, value, &dev.serial, json).await
+        }
+        Some(SettingsAction::Save { file }) => {
+            execute_save(&mut client, file, &dev.serial, json).await
+        }
+        Some(SettingsAction::Load { file }) => {
+            execute_load(&mut client, file, &dev.serial, json).await
+        }
+    }
+}
+
+/// `settings list` — list all settings with their current values.
+async fn execute_list(client: &mut ApClient, serial: &str, json: bool) -> Result<()> {
+    let entries = client
+        .settings_list()
         .await
         .context("failed to list settings")?;
 
-    // Parse key=value lines
-    let lines: Vec<&str> = response.lines().collect();
-    let mut settings = Vec::new();
-    for line in lines {
-        if let Some((key, value)) = line.split_once('=') {
-            settings.push((key.to_string(), value.to_string()));
-        }
-    }
-
     if json {
-        let json_settings: Vec<_> = settings
-            .iter()
-            .map(|(key, value)| {
-                json!({
-                    "key": key,
-                    "value": value
-                })
-            })
-            .collect();
-
-        let output = json!({
-            "settings": json_settings,
-            "count": settings.len()
-        });
-
-        println!("{}", json_output::format_success(output));
+        let mut data = serde_json::Map::new();
+        data.insert("device".to_string(), json!(serial));
+        let settings: serde_json::Map<String, serde_json::Value> =
+            entries.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+        data.insert("settings".to_string(), serde_json::Value::Object(settings));
+        println!(
+            "{}",
+            json_output::format_success(serde_json::Value::Object(data))
+        );
     } else {
-        println!("Settings:");
-        println!("  {:<20} {}", "Key", "Value");
-        println!("  {:-<20} {:-<30}", "", "");
-
-        for (key, value) in settings.iter() {
-            println!("  {:<20} {}", key, value);
+        let max_key_len = entries.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        for (key, value) in &entries {
+            println!("  {:<width$}  {}", key, value, width = max_key_len);
         }
-
-        println!("\nTotal: {} settings", settings.len());
     }
 
     Ok(())
 }
 
-/// Get a specific setting value.
-async fn execute_get(key: &str, device: Option<&str>, json: bool) -> Result<()> {
-    let dev = resolve_device(device)
-        .await
-        .context("failed to resolve device")?;
-    let port_path = dev
-        .shell_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
-
-    info!("Connecting to {} on {}", dev.serial, port_path);
-
-    let mut conn = DeviceConnection::open(port_path)
-        .context(format!("failed to open serial port {}", port_path))?;
-
-    let cmd = format!("settings get {}", key);
-    let response = conn
-        .send_command(&cmd)
+/// `settings get <key>` — get the value of a single setting.
+async fn execute_get(client: &mut ApClient, key: &str, serial: &str, json: bool) -> Result<()> {
+    let (_key, value) = client
+        .settings_get(key)
         .await
         .context(format!("failed to get setting '{}'", key))?;
 
-    let value = response.trim();
-
     if json {
-        let data = json!({
+        let output = json!({
+            "device": serial,
             "key": key,
-            "value": value
+            "value": value,
         });
-        println!("{}", json_output::format_success(data));
+        println!("{}", json_output::format_success(output));
     } else {
         println!("{}", value);
     }
+
     Ok(())
 }
 
-/// Set a specific setting value.
-async fn execute_set(key: &str, value: &str, device: Option<&str>, json: bool) -> Result<()> {
-    let dev = resolve_device(device)
+/// `settings set <key> <value>` — set the value of a setting.
+async fn execute_set(
+    client: &mut ApClient,
+    key: &str,
+    value: &str,
+    serial: &str,
+    json: bool,
+) -> Result<()> {
+    client
+        .settings_set(key, value)
         .await
-        .context("failed to resolve device")?;
-    let port_path = dev
-        .shell_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
-
-    info!("Connecting to {} on {}", dev.serial, port_path);
-
-    let mut conn = DeviceConnection::open(port_path)
-        .context(format!("failed to open serial port {}", port_path))?;
-
-    // Quote value if it contains spaces
-    let formatted_value = if value.contains(' ') {
-        format!("\"{}\"", value)
-    } else {
-        value.to_string()
-    };
-
-    let cmd = format!("settings set {} {}", key, formatted_value);
-    let _response = conn
-        .send_command(&cmd)
-        .await
-        .context(format!("failed to set setting '{}'", key))?;
+        .context(format!("failed to set setting '{}' = '{}'", key, value))?;
 
     if json {
-        let data = json!({
+        let output = json!({
+            "device": serial,
             "key": key,
             "value": value,
-            "status": "success"
+            "message": format!("Setting '{}' updated", key),
         });
-        println!("{}", json_output::format_success(data));
+        println!("{}", json_output::format_success(output));
     } else {
-        println!("Setting '{}' set to '{}'", key, value);
+        println!("Setting '{}' updated to '{}'.", key, value);
     }
+
     Ok(())
 }
 
-/// Save all settings to a JSON preset file.
-async fn execute_save(file: &str, device: Option<&str>, json_output_flag: bool) -> Result<()> {
-    let dev = resolve_device(device)
+/// `settings save <file>` — save all settings to a JSON file.
+async fn execute_save(client: &mut ApClient, file: &str, serial: &str, json: bool) -> Result<()> {
+    let entries = client
+        .settings_list()
         .await
-        .context("failed to resolve device")?;
-    let port_path = dev
-        .shell_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
+        .context("failed to list settings for save")?;
 
-    info!("Connecting to {} on {}", dev.serial, port_path);
+    // Use BTreeMap for deterministic key ordering in output.
+    let settings: BTreeMap<String, String> = entries.into_iter().collect();
 
-    let mut conn = DeviceConnection::open(port_path)
-        .context(format!("failed to open serial port {}", port_path))?;
+    let json_str =
+        serde_json::to_string_pretty(&settings).context("failed to serialize settings")?;
 
-    let response = conn
-        .send_command("settings")
-        .await
-        .context("failed to list settings")?;
+    std::fs::write(file, &json_str).context(format!("failed to write settings to '{}'", file))?;
 
-    let lines: Vec<&str> = response.lines().collect();
-    let mut settings_array = Vec::new();
-
-    for line in lines {
-        if let Some((key, value)) = line.split_once('=') {
-            settings_array.push(json!({
-                "key": key,
-                "value": value
-            }));
-        }
-    }
-
-    let json_doc = json!({
-        "settings": settings_array
-    });
-
-    let json_string = serde_json::to_string_pretty(&json_doc)?;
-    fs::write(file, json_string).context(format!("failed to write preset file '{}'", file))?;
-
-    if json_output_flag {
-        let data = json!({
+    if json {
+        let output = json!({
+            "device": serial,
             "file": file,
-            "settings_count": settings_array.len()
+            "settings_count": settings.len(),
+            "message": format!("Settings saved to '{}'", file),
         });
-        println!("{}", json_output::format_success(data));
+        println!("{}", json_output::format_success(output));
     } else {
-        println!("Saved {} settings to '{}'", settings_array.len(), file);
+        println!("Saved {} setting(s) to '{}'.", settings.len(), file);
     }
 
     Ok(())
 }
 
-/// Load settings from a JSON preset file.
-async fn execute_load(file: &str, device: Option<&str>, json_output_flag: bool) -> Result<()> {
-    // 1. Read and parse JSON
-    let content = fs::read_to_string(file).context(format!("Failed to read file '{}'", file))?;
+/// `settings load <file>` — load settings from a JSON file and apply them.
+async fn execute_load(client: &mut ApClient, file: &str, serial: &str, json: bool) -> Result<()> {
+    let path = Path::new(file);
+    if !path.exists() {
+        anyhow::bail!("settings file not found: {}", file);
+    }
 
-    let json_value: serde_json::Value =
-        serde_json::from_str(&content).context(format!("Failed to parse JSON file '{}'", file))?;
+    let content = std::fs::read_to_string(path)
+        .context(format!("failed to read settings from '{}'", file))?;
 
-    let settings_array = json_value["settings"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("JSON file must contain 'settings' array"))?;
+    let settings: BTreeMap<String, String> = serde_json::from_str(&content)
+        .context(format!("failed to parse settings file '{}'", file))?;
 
-    // 2. Connect to device
-    let dev = resolve_device(device)
-        .await
-        .context("failed to resolve device")?;
-    let port_path = dev
-        .shell_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?;
-
-    info!("Connecting to {} on {}", dev.serial, port_path);
-
-    let mut conn = DeviceConnection::open(port_path)
-        .context(format!("failed to open serial port {}", port_path))?;
-
-    // 3. Apply each setting
-    let mut successes = Vec::new();
-    let mut failures = Vec::new();
-
-    for setting_obj in settings_array {
-        let key = setting_obj["key"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Setting missing 'key' field"))?;
-
-        let value = setting_obj["value"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Setting '{}' missing 'value' field", key))?;
-
-        // Ignore legacy "access" field if present — all settings are writable
-
-        // Quote value if needed
-        let formatted_value = if value.contains(' ') {
-            format!("\"{}\"", value)
+    if settings.is_empty() {
+        if json {
+            let output = json!({
+                "device": serial,
+                "file": file,
+                "settings_count": 0,
+                "message": "No settings to apply (file is empty)",
+            });
+            println!("{}", json_output::format_success(output));
         } else {
-            value.to_string()
-        };
-
-        let cmd = format!("settings set {} {}", key, formatted_value);
-        match conn.send_command(&cmd).await {
-            Ok(_response) => {
-                successes.push((key.to_string(), value.to_string()));
-            }
-            Err(e) => {
-                failures.push((key.to_string(), e.to_string()));
-            }
+            println!("No settings to apply (file is empty).");
         }
+        return Ok(());
     }
 
-    // 4. Report results
-    if json_output_flag {
-        let data = json!({
+    let mut applied = 0;
+    for (key, value) in &settings {
+        client
+            .settings_set(key, value)
+            .await
+            .context(format!("failed to set '{}' = '{}'", key, value))?;
+
+        if !json {
+            println!("  {} = {}", key, value);
+        }
+        applied += 1;
+    }
+
+    if json {
+        let output = json!({
+            "device": serial,
             "file": file,
-            "successes": successes.len(),
-            "failures": failures.len(),
-            "details": {
-                "successes": successes,
-                "failures": failures
-            }
+            "settings_count": applied,
+            "message": format!("Applied {} setting(s) from '{}'", applied, file),
         });
-        println!("{}", json_output::format_success(data));
+        println!("{}", json_output::format_success(output));
     } else {
-        println!("Loaded settings from '{}'", file);
-        println!("  {} succeeded", successes.len());
-        if !failures.is_empty() {
-            println!("  {} failed", failures.len());
-            for (key, error) in &failures {
-                eprintln!("    - '{}': {}", key, error);
-            }
-        }
+        println!("Applied {} setting(s) from '{}'.", applied, file);
     }
 
-    if !failures.is_empty() {
-        Err(anyhow::anyhow!("Some settings failed to apply"))
-    } else {
-        Ok(())
-    }
+    Ok(())
 }

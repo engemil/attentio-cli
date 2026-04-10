@@ -28,20 +28,12 @@ const RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
 enum ReaderMsg {
     /// A line received from the debug prints port (CDC0).
     DebugLine(String),
-    /// A line received from the shell port (CDC1) — part of a command response.
-    ShellLine(String),
     /// The debug port reader encountered an unrecoverable error.
     DebugError(String),
-    /// The shell port reader encountered an unrecoverable error.
-    ShellError(String),
     /// The debug port is busy — another process has it open.
     DebugPortBusy(String),
-    /// The shell port is busy — another process has it open.
-    ShellPortBusy(String),
     /// The debug port was successfully reconnected.
     DebugReconnected,
-    /// The shell port was successfully reconnected, carrying the new command sender.
-    ShellReconnected(mpsc::Sender<String>),
 }
 
 /// Restore the terminal to its normal state.
@@ -51,11 +43,11 @@ fn restore_terminal() {
     let _ = io::stdout().execute(LeaveAlternateScreen);
 }
 
-/// Execute the `tui` command — TUI dashboard with dual CDC view.
+/// Execute the `tui` command — TUI dashboard with CDC debug view.
 ///
-/// Always shows both panes (debug prints + shell). Each CDC port is opened
-/// independently — if one fails, that pane shows "(reconnecting...)" and
-/// a background task retries every few seconds until the port becomes available.
+/// Shows a single full-height pane for debug prints (CDC0). If the port
+/// fails to open, a background task retries every few seconds until it
+/// becomes available.
 pub async fn execute(device: Option<&str>) -> Result<()> {
     // Resolve which device to talk to
     let dev = resolve_device(device)
@@ -63,13 +55,11 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
         .context("failed to resolve device")?;
 
     let debug_port_path = dev.debug_port().map(|s| s.to_string());
-    let shell_port_path = dev.shell_port().map(|s| s.to_string());
 
     info!(
-        "Starting TUI for {} — debug: {}, shell: {}",
+        "Starting TUI for {} — debug: {}",
         dev.serial,
         debug_port_path.as_deref().unwrap_or("none"),
-        shell_port_path.as_deref().unwrap_or("none"),
     );
 
     // Channel for background reader tasks to send messages to the main loop
@@ -120,67 +110,10 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
         }
     }
 
-    // --- Try to open CDC1 (shell) ---
-    let mut shell_connected = false;
-    let mut shell_reconnecting = false;
-    let mut shell_port_busy = false;
-    let cmd_tx = if let Some(ref path) = shell_port_path {
-        match DeviceConnection::open(path) {
-            Ok(conn) => {
-                shell_connected = true;
-                info!("Shell port opened: {}", path);
-
-                let (cmd_tx, cmd_rx) = mpsc::channel::<String>(32);
-                let tx_shell = tx.clone();
-
-                let handle = tokio::spawn(async move {
-                    shell_io_task(conn, cmd_rx, tx_shell).await;
-                });
-                task_handles.push(handle);
-
-                Some(cmd_tx)
-            }
-            Err(e) if e.is_port_busy() => {
-                warn!("{}", e);
-                shell_port_busy = true;
-                // Start reconnect task — port may become available later
-                let tx_reconnect = tx.clone();
-                let path_clone = path.clone();
-                let handle = tokio::spawn(async move {
-                    shell_reconnect_task(path_clone, tx_reconnect).await;
-                });
-                task_handles.push(handle);
-                None
-            }
-            Err(e) => {
-                warn!("Failed to open shell port {}: {}", path, e);
-                // Start reconnect task in background
-                shell_reconnecting = true;
-                let tx_reconnect = tx.clone();
-                let path_clone = path.clone();
-                let handle = tokio::spawn(async move {
-                    shell_reconnect_task(path_clone, tx_reconnect).await;
-                });
-                task_handles.push(handle);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // Create app state with connection status
-    let mut app = App::new(
-        dev.serial.clone(),
-        debug_port_path,
-        shell_port_path,
-        debug_connected,
-        shell_connected,
-    );
+    let mut app = App::new(dev.serial.clone(), debug_port_path, debug_connected);
     app.debug_reconnecting = debug_reconnecting;
-    app.shell_reconnecting = shell_reconnecting;
     app.debug_port_busy = debug_port_busy;
-    app.shell_port_busy = shell_port_busy;
 
     // Channel for terminal events (polled from a blocking thread)
     let (term_tx, mut term_rx) = mpsc::channel::<Event>(64);
@@ -223,7 +156,6 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
             &mut app,
             &mut rx,
             &mut term_rx,
-            cmd_tx,
             tx.clone(),
             &mut task_handles,
         )
@@ -261,7 +193,6 @@ async fn run_event_loop(
     app: &mut App,
     rx: &mut mpsc::Receiver<ReaderMsg>,
     term_rx: &mut mpsc::Receiver<Event>,
-    mut cmd_tx: Option<mpsc::Sender<String>>,
     reader_tx: mpsc::Sender<ReaderMsg>,
     task_handles: &mut Vec<JoinHandle<()>>,
 ) -> Result<()> {
@@ -273,15 +204,8 @@ async fn run_event_loop(
         app.push_debug_line("Listening for debug prints...".to_string());
     }
 
-    if app.shell_connected {
-        app.push_shell_line(
-            "Shell ready. Type commands below. For list of commands type help".to_string(),
-        );
-        app.push_shell_line("For list of commands type help".to_string());
-    }
-
-    app.push_shell_line("Press Esc or Ctrl+C to quit.".to_string());
-    app.push_shell_line(String::new());
+    app.push_debug_line("Press Esc or Ctrl+C to quit.".to_string());
+    app.push_debug_line(String::new());
 
     // Initial render
     terminal.draw(|frame| ui::render(frame, app))?;
@@ -295,16 +219,6 @@ async fn run_event_loop(
                         if key.kind == KeyEventKind::Press {
                             let action = tui_event::handle_key_event(app, key);
                             match action {
-                                Action::SendCommand(cmd) => {
-                                    if let Some(ref cmd_tx) = cmd_tx {
-                                        if cmd_tx.send(cmd).await.is_err() {
-                                            app.push_shell_line(
-                                                "[ERROR: shell connection lost]".to_string()
-                                            );
-                                            app.shell_connected = false;
-                                        }
-                                    }
-                                }
                                 Action::Quit => break,
                                 Action::None => {}
                             }
@@ -325,9 +239,6 @@ async fn run_event_loop(
                     ReaderMsg::DebugLine(line) => {
                         app.push_debug_line(line);
                     }
-                    ReaderMsg::ShellLine(line) => {
-                        app.push_shell_line(line);
-                    }
                     ReaderMsg::DebugError(err) => {
                         app.push_debug_line(format!("[ERROR: {}]", err));
                         app.debug_connected = false;
@@ -344,24 +255,6 @@ async fn run_event_loop(
                             task_handles.push(handle);
                         }
                     }
-                    ReaderMsg::ShellError(err) => {
-                        app.push_shell_line(format!("[ERROR: {}]", err));
-                        app.shell_connected = false;
-                        // Drop the old cmd_tx so the dead shell_io_task can clean up
-                        cmd_tx = None;
-
-                        // Start reconnection if we have a port path
-                        let path_clone = app.shell_port_path.clone();
-                        if let Some(path) = path_clone {
-                            app.shell_reconnecting = true;
-                            app.push_shell_line("Attempting to reconnect...".to_string());
-                            let tx_reconnect = reader_tx.clone();
-                            let handle = tokio::spawn(async move {
-                                shell_reconnect_task(path, tx_reconnect).await;
-                            });
-                            task_handles.push(handle);
-                        }
-                    }
                     ReaderMsg::DebugReconnected => {
                         app.debug_connected = true;
                         app.debug_reconnecting = false;
@@ -374,19 +267,6 @@ async fn run_event_loop(
                         app.debug_reconnecting = false;
                         app.debug_port_busy = true;
                     }
-                    ReaderMsg::ShellPortBusy(msg) => {
-                        app.push_shell_line(format!("[{}]", msg));
-                        app.shell_reconnecting = false;
-                        app.shell_port_busy = true;
-                    }
-                    ReaderMsg::ShellReconnected(new_cmd_tx) => {
-                        app.shell_connected = true;
-                        app.shell_reconnecting = false;
-                        app.shell_port_busy = false;
-                        cmd_tx = Some(new_cmd_tx);
-                        app.push_shell_line("Reconnected. Shell ready.".to_string());
-                        info!("Shell port reconnected");
-                    }
                 }
                 true
             }
@@ -396,9 +276,6 @@ async fn run_event_loop(
             terminal.draw(|frame| ui::render(frame, app))?;
         }
     }
-
-    // Drop cmd_tx so shell_io_task's recv() returns None and it exits
-    drop(cmd_tx);
 
     Ok(())
 }
@@ -426,82 +303,6 @@ async fn debug_reader_task(mut conn: DeviceConnection, tx: mpsc::Sender<ReaderMs
         }
     }
     debug!("Debug reader task exiting");
-}
-
-/// Background task that handles shell I/O: receives commands from the main loop,
-/// sends them to the device, and forwards response lines back.
-///
-/// While idle (waiting for user input), continuously attempts short reads on
-/// the serial port so that a device disconnect (e.g. USB cable pulled) is
-/// detected promptly rather than only on the next command attempt.
-async fn shell_io_task(
-    mut conn: DeviceConnection,
-    mut cmd_rx: mpsc::Receiver<String>,
-    tx: mpsc::Sender<ReaderMsg>,
-) {
-    loop {
-        tokio::select! {
-            // Branch 1: Command from the main loop
-            cmd = cmd_rx.recv() => {
-                let cmd = match cmd {
-                    Some(c) => c,
-                    None => break, // main loop dropped cmd_tx
-                };
-
-                match conn.send_command(&cmd).await {
-                    Ok(response) => {
-                        if !response.is_empty() {
-                            for line in response.lines() {
-                                if tx
-                                    .send(ReaderMsg::ShellLine(line.to_string()))
-                                    .await
-                                    .is_err()
-                                {
-                                    return;
-                                }
-                            }
-                        }
-                        // Show OK marker
-                        if tx
-                            .send(ReaderMsg::ShellLine("OK".to_string()))
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        if tx.send(ReaderMsg::ShellError(e.to_string())).await.is_err() {
-                            return;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            // Branch 2: Health-check read — detects disconnect while idle
-            result = conn.read_line() => {
-                match result {
-                    Ok(line) => {
-                        // Unexpected data on shell port while idle — forward it
-                        if tx.send(ReaderMsg::ShellLine(line)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(AttentioError::Timeout { .. }) => {
-                        // No data within timeout — normal for an idle shell port.
-                        continue;
-                    }
-                    Err(e) => {
-                        // Device disconnected or I/O error
-                        let _ = tx.send(ReaderMsg::ShellError(e.to_string())).await;
-                        return;
-                    }
-                }
-            }
-        }
-    }
-    debug!("Shell I/O task exiting");
 }
 
 /// Background task that periodically attempts to reconnect the debug port (CDC0).
@@ -532,43 +333,6 @@ async fn debug_reconnect_task(port_path: String, tx: mpsc::Sender<ReaderMsg>) {
             Err(e) if e.is_port_busy() => {
                 // Port is held by another process — notify TUI and keep retrying.
                 let _ = tx.send(ReaderMsg::DebugPortBusy(e.to_string())).await;
-                continue;
-            }
-            Err(_) => {
-                // Port still unavailable — silently retry
-                continue;
-            }
-        }
-    }
-}
-
-/// Background task that periodically attempts to reconnect the shell port (CDC1).
-///
-/// On success, spawns a new `shell_io_task` and notifies the main loop with the
-/// new command sender. If the port is busy, notifies the main loop and keeps
-/// retrying in case the port is released.
-async fn shell_reconnect_task(port_path: String, tx: mpsc::Sender<ReaderMsg>) {
-    loop {
-        tokio::time::sleep(RECONNECT_INTERVAL).await;
-
-        match DeviceConnection::open(&port_path) {
-            Ok(conn) => {
-                info!("Shell port reconnected: {}", port_path);
-
-                let (cmd_tx, cmd_rx) = mpsc::channel::<String>(32);
-
-                // Notify the main loop with the new command sender.
-                if tx.send(ReaderMsg::ShellReconnected(cmd_tx)).await.is_err() {
-                    return;
-                }
-
-                // Spawn the shell I/O task in-line (it takes over this task's role)
-                shell_io_task(conn, cmd_rx, tx).await;
-                return;
-            }
-            Err(e) if e.is_port_busy() => {
-                // Port is held by another process — notify TUI and keep retrying.
-                let _ = tx.send(ReaderMsg::ShellPortBusy(e.to_string())).await;
                 continue;
             }
             Err(_) => {

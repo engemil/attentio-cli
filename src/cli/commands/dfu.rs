@@ -12,6 +12,7 @@ use crate::device::config::{ATTENTIO_PID, ATTENTIO_VID};
 use crate::device::connection::DeviceConnection;
 use crate::device::discovery::{find_devices, find_devices_fast, resolve_device, DeviceMode};
 use crate::json_output;
+use crate::protocol::packet::{build_packet, CMD_DFU_ENTER};
 
 // ── Firmware header constants ────────────────────────────────────────────────
 
@@ -158,7 +159,7 @@ pub async fn execute_enter(device: Option<&str>, json: bool) -> Result<()> {
 /// Internal: send the AP DFU_ENTER command to reboot the device into bootloader.
 ///
 /// The firmware no longer has a ChibiOS shell — DFU enter is handled via
-/// the Attentio Protocol (AP) binary interface on CDC1 (shell_port).
+/// the Attentio Protocol (AP) interface on CDC1 (ap_port).
 /// We send a raw 4-byte AP packet: [SYNC=0xA5, LEN=0x01, CMD=0x70, CRC8=0x42].
 /// The device writes 0xDEADBEEF to RAM and triggers NVIC_SystemReset()
 /// immediately — the USB connection will drop with no response.
@@ -177,8 +178,8 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     }
 
     let port_path = dev
-        .shell_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no shell port", dev.serial))?
+        .ap_port()
+        .ok_or_else(|| anyhow::anyhow!("device '{}' has no protocol port", dev.serial))?
         .to_string();
 
     let serial = dev.serial.clone();
@@ -187,8 +188,7 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     // Open connection and send the AP DFU_ENTER packet.
     // AP packet format: [SYNC 0xA5] [LEN] [CMD] [CRC8]
     // DFU_ENTER (0x70) has no payload, so LEN=1.
-    // CRC-8/CCITT(poly=0x07, init=0x00) over [LEN=0x01, CMD=0x70] = 0x42.
-    const AP_DFU_ENTER_PACKET: [u8; 4] = [0xA5, 0x01, 0x70, 0x42];
+    let ap_dfu_enter_packet = build_packet(CMD_DFU_ENTER, &[]);
 
     let mut conn = DeviceConnection::open(&port_path)
         .context(format!("failed to open serial port {}", port_path))?;
@@ -197,7 +197,7 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Send the raw AP binary packet — the device will reboot immediately.
-    match conn.write_raw(&AP_DFU_ENTER_PACKET).await {
+    match conn.write_raw(&ap_dfu_enter_packet).await {
         Ok(_) => {
             debug!("AP DFU_ENTER packet sent successfully");
         }

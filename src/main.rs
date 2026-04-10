@@ -2,6 +2,7 @@ mod cli;
 mod device;
 mod error;
 mod json_output;
+mod protocol;
 mod tui;
 
 use anyhow::Result;
@@ -34,16 +35,6 @@ async fn main() -> Result<()> {
     let result = match &cli.command {
         Command::List => cli::commands::list::execute(cli.json).await,
 
-        Command::Send { cmd, device } => {
-            let device = device.as_deref().or(global_device);
-            cli::commands::send::execute(cmd, device, cli.json).await
-        }
-
-        Command::Shell { device } => {
-            let device = device.as_deref().or(global_device);
-            cli::commands::shell::execute(device).await
-        }
-
         Command::Tui { device } => {
             let device = device.as_deref().or(global_device);
             cli::commands::tui::execute(device).await
@@ -51,14 +42,6 @@ async fn main() -> Result<()> {
 
         Command::Led { mode, options } => {
             cli::commands::led::execute(mode, options, global_device, cli.json).await
-        }
-
-        Command::Metadata { action } => {
-            cli::commands::metadata::execute(action, global_device, cli.json).await
-        }
-
-        Command::Settings { action } => {
-            cli::commands::settings::execute(action, global_device, cli.json).await
         }
 
         Command::Dfu { firmware, device } => {
@@ -69,6 +52,12 @@ async fn main() -> Result<()> {
         Command::DfuEnter { device } => {
             let device = device.as_deref().or(global_device);
             cli::commands::dfu::execute_enter(device, cli.json).await
+        }
+
+        Command::Metadata => cli::commands::metadata::execute(global_device, cli.json).await,
+
+        Command::Settings { action } => {
+            cli::commands::settings::execute(action.as_ref(), global_device, cli.json).await
         }
     };
 

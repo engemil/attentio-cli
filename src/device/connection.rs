@@ -2,24 +2,15 @@ use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{FromRawFd, RawFd};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use crate::error::AttentioError;
 
 /// Default timeout for `read_line()` (used by the debug reader stream).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Hard timeout for the entire `send_command()` response.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Inter-line timeout: if we've received at least one response line and no
-/// more data arrives within this window, the response is considered complete.
-/// Handles commands (like ChibiOS built-in `help`) that don't send an
-/// `OK`/`ERROR` terminator — they just print output and return to the prompt.
-const INTER_LINE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// An async connection to a device over a serial port.
 pub struct DeviceConnection {
@@ -71,163 +62,6 @@ impl DeviceConnection {
         self
     }
 
-    /// Send a command and wait for the response.
-    ///
-    /// Protocol: send `<cmd>\r\n`, read lines until `OK\r\n` or `ERROR <msg>\r\n`.
-    /// Returns the response body (lines before the OK/ERROR terminator).
-    ///
-    /// ChibiOS shell compatibility:
-    /// - **Echo handling**: The device echoes back the sent command. The first
-    ///   received line is checked — if it ends with the sent command text, it is
-    ///   silently discarded.
-    /// - **Missing terminator**: Some built-in ChibiOS commands (like `help`)
-    ///   don't send `OK`/`ERROR`. After receiving at least one response line,
-    ///   if no more data arrives within [`INTER_LINE_TIMEOUT`], the response is
-    ///   considered complete.
-    /// - **Prompt handling**: Before sending, any stale data in the read buffer
-    ///   (like the device's `attentio> ` prompt) is drained.
-    pub async fn send_command(&mut self, cmd: &str) -> Result<String, AttentioError> {
-        debug!("Sending command: {:?}", cmd);
-
-        // Drain any stale data in the read buffer (e.g., the device's prompt
-        // from a previous command).
-        self.drain_pending().await;
-
-        // Send command with \r\n terminator
-        let cmd_bytes = format!("{}\r\n", cmd);
-        self.writer
-            .write_all(cmd_bytes.as_bytes())
-            .await
-            .map_err(AttentioError::Io)?;
-        self.writer.flush().await.map_err(AttentioError::Io)?;
-
-        trace!("Command sent, waiting for response...");
-
-        let cmd_trimmed = cmd.trim();
-        let start = Instant::now();
-        let mut response_lines: Vec<String> = Vec::new();
-        let mut echo_skipped = false;
-
-        loop {
-            let elapsed = start.elapsed();
-            let remaining = COMMAND_TIMEOUT.checked_sub(elapsed).unwrap_or_default();
-            if remaining.is_zero() {
-                // Hard timeout expired
-                if !response_lines.is_empty() {
-                    // We have partial data — return it rather than erroring
-                    debug!(
-                        "Command hard timeout with {} lines collected",
-                        response_lines.len()
-                    );
-                    return Ok(response_lines.join("\n"));
-                }
-                return Err(AttentioError::Timeout {
-                    seconds: COMMAND_TIMEOUT.as_secs(),
-                });
-            }
-
-            // If we already have at least one response line, use the shorter
-            // inter-line timeout — if no more data arrives, the response is done.
-            let read_timeout = if response_lines.is_empty() {
-                remaining
-            } else {
-                remaining.min(INTER_LINE_TIMEOUT)
-            };
-
-            let mut line = String::new();
-            let read_result = tokio::time::timeout(read_timeout, async {
-                self.reader
-                    .read_line(&mut line)
-                    .await
-                    .map_err(AttentioError::Io)
-            })
-            .await;
-
-            match read_result {
-                Ok(Ok(0)) => {
-                    return Err(AttentioError::Protocol {
-                        message: "connection closed unexpectedly".to_string(),
-                    });
-                }
-                Ok(Ok(_)) => {
-                    let trimmed = line.trim_end_matches(['\r', '\n']);
-                    trace!("Received line: {:?}", trimmed);
-
-                    // Skip the echo line — the first line that ends with the
-                    // sent command text. The device may prepend its prompt
-                    // (e.g., "attentio> help"), so we check `ends_with`.
-                    if !echo_skipped {
-                        echo_skipped = true;
-                        if trimmed.ends_with(cmd_trimmed) {
-                            trace!("Skipping echo line: {:?}", trimmed);
-                            continue;
-                        }
-                        // Not an echo — fall through to process as response
-                    }
-
-                    if trimmed == "OK" {
-                        debug!("Command completed successfully");
-                        return Ok(response_lines.join("\n"));
-                    } else if let Some(err_msg) = trimmed.strip_prefix("ERROR ") {
-                        return Err(AttentioError::Protocol {
-                            message: err_msg.to_string(),
-                        });
-                    } else if trimmed == "ERROR" {
-                        return Err(AttentioError::Protocol {
-                            message: "unknown error".to_string(),
-                        });
-                    } else {
-                        response_lines.push(trimmed.to_string());
-                    }
-                }
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    // Timeout fired
-                    if !response_lines.is_empty() {
-                        // Inter-line timeout: we have data, response is complete.
-                        // This handles commands like `help` that don't send OK.
-                        debug!(
-                            "Response complete (inter-line timeout, {} lines)",
-                            response_lines.len()
-                        );
-                        return Ok(response_lines.join("\n"));
-                    }
-                    // No data at all yet — keep waiting until hard timeout
-                    // (the loop condition checks remaining time)
-                }
-            }
-        }
-    }
-
-    /// Drain any pending data from the read buffer.
-    ///
-    /// Discards stale bytes that may be left over from a previous command
-    /// (e.g., the device's shell prompt `attentio> ` which doesn't end with
-    /// a newline and sits in the buffer).
-    async fn drain_pending(&mut self) {
-        // First, discard any data already in the BufReader's internal buffer.
-        let buffered = self.reader.buffer().len();
-        if buffered > 0 {
-            trace!("Draining {} buffered bytes", buffered);
-            self.reader.consume(buffered);
-        }
-        // Then, try a very short non-blocking read to discard any data that
-        // has arrived in the OS buffer but isn't yet in the BufReader.
-        let mut discard = [0u8; 512];
-        let _ = tokio::time::timeout(Duration::from_millis(30), async {
-            loop {
-                match self.reader.read(&mut discard).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        trace!("Drained {} bytes from OS buffer", n);
-                        continue;
-                    }
-                }
-            }
-        })
-        .await;
-    }
-
     /// Read a single line from the port (useful for debug print streams).
     pub async fn read_line(&mut self) -> Result<String, AttentioError> {
         let mut line = String::new();
@@ -255,103 +89,7 @@ impl DeviceConnection {
         }
     }
 
-    /// Synchronise with the device shell.
-    ///
-    /// Waits briefly for the USB CDC link to stabilise after open, then sends
-    /// a bare `\r\n` and reads raw bytes until the shell prompt suffix (`> `)
-    /// appears.  This confirms that the firmware's shell is alive and ready to
-    /// accept a real command, and also drains any stale data that may be
-    /// sitting in the buffer (boot messages, partial prompts, etc.).
-    ///
-    /// Uses byte-level reads instead of `read_line` because the ChibiOS
-    /// prompt (`attentio> `) is **not** newline-terminated — `read_line`
-    /// would block forever waiting for a `\n` that never comes.
-    ///
-    /// On timeout the error is propagated — the caller can retry.
-    pub async fn sync_shell(&mut self) -> Result<(), AttentioError> {
-        const STABILISE_DELAY: Duration = Duration::from_millis(50);
-        const SYNC_TIMEOUT: Duration = Duration::from_millis(500);
-
-        // Brief delay so the CDC ACM link is up and the firmware has asserted DTR.
-        tokio::time::sleep(STABILISE_DELAY).await;
-
-        // Drain anything already in the buffer (boot banner, old prompt, …).
-        self.drain_pending().await;
-
-        // Send a bare newline — the shell will echo it back and re-print its
-        // prompt (e.g. "attentio> ").
-        self.writer
-            .write_all(b"\r\n")
-            .await
-            .map_err(AttentioError::Io)?;
-        self.writer.flush().await.map_err(AttentioError::Io)?;
-
-        trace!("Sync: sent probe, waiting for shell prompt...");
-
-        // Read raw bytes and accumulate until we see the prompt suffix "> ".
-        // We keep a small tail buffer — only the last few bytes matter for
-        // matching, so we don't need to accumulate everything.
-        let mut buf = [0u8; 128];
-        let mut tail = Vec::with_capacity(64);
-
-        let start = Instant::now();
-        loop {
-            let remaining = SYNC_TIMEOUT
-                .checked_sub(start.elapsed())
-                .unwrap_or_default();
-            if remaining.is_zero() {
-                debug!(
-                    "Sync: timed out waiting for shell prompt (received so far: {:?})",
-                    String::from_utf8_lossy(&tail)
-                );
-                return Err(AttentioError::Timeout {
-                    seconds: 0, // sub-second, but we reuse the variant
-                });
-            }
-
-            let read_result = tokio::time::timeout(remaining, async {
-                self.reader.read(&mut buf).await.map_err(AttentioError::Io)
-            })
-            .await;
-
-            match read_result {
-                Ok(Ok(0)) => {
-                    return Err(AttentioError::Protocol {
-                        message: "connection closed during sync".to_string(),
-                    });
-                }
-                Ok(Ok(n)) => {
-                    trace!(
-                        "Sync: received {} bytes: {:?}",
-                        n,
-                        String::from_utf8_lossy(&buf[..n])
-                    );
-                    tail.extend_from_slice(&buf[..n]);
-
-                    // Check if the accumulated data ends with "> " (prompt).
-                    if tail.ends_with(b"> ") {
-                        debug!("Sync: shell prompt detected");
-                        // Drain the prompt from the BufReader so send_command
-                        // starts with a clean slate (the BufReader may have
-                        // buffered more bytes than we consumed via `read`).
-                        self.drain_pending().await;
-                        return Ok(());
-                    }
-                }
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    debug!(
-                        "Sync: timed out waiting for shell prompt (received so far: {:?})",
-                        String::from_utf8_lossy(&tail)
-                    );
-                    return Err(AttentioError::Timeout { seconds: 0 });
-                }
-            }
-        }
-    }
-
-    /// Write raw bytes to the port (useful for interactive shell).
-    #[allow(dead_code)] // Reserved for future shell/TUI improvements
+    /// Write raw bytes to the port (used by DFU enter to send AP packets).
     pub async fn write_raw(&mut self, data: &[u8]) -> Result<(), AttentioError> {
         self.writer
             .write_all(data)
@@ -359,6 +97,14 @@ impl DeviceConnection {
             .map_err(AttentioError::Io)?;
         self.writer.flush().await.map_err(AttentioError::Io)?;
         Ok(())
+    }
+
+    /// Read raw bytes from the port into `buf`.
+    ///
+    /// Returns the number of bytes read. Used by the AP protocol parser to
+    /// consume response bytes from the device.
+    pub async fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize, AttentioError> {
+        self.reader.read(buf).await.map_err(AttentioError::Io)
     }
 }
 

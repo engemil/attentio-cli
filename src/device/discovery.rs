@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Duration;
 
 use rusb::UsbContext;
 use serde::Serialize;
@@ -7,8 +6,8 @@ use serialport::{SerialPortType, UsbPortInfo};
 use tracing::{debug, trace, warn};
 
 use super::config::{self, ATTENTIO_PID, ATTENTIO_VID};
-use super::connection::DeviceConnection;
 use crate::error::AttentioError;
+use crate::protocol::ApClient;
 
 /// Represents the operational mode of a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -38,8 +37,8 @@ impl std::fmt::Display for DeviceMode {
 pub enum CdcRole {
     /// Debug print stream (read-only).
     DebugPrints,
-    /// Shell command interface (request/response).
-    Shell,
+    /// Attentio Protocol (AP) interface.
+    Protocol,
     /// Single CDC — role is ambiguous (pre-dual-CDC firmware).
     Single,
 }
@@ -48,7 +47,7 @@ impl std::fmt::Display for CdcRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CdcRole::DebugPrints => write!(f, "debug"),
-            CdcRole::Shell => write!(f, "shell"),
+            CdcRole::Protocol => write!(f, "protocol"),
             CdcRole::Single => write!(f, "serial"),
         }
     }
@@ -80,15 +79,15 @@ pub struct AttentioDevice {
     pub usb_location: Option<String>,
     /// CDC0 port — debug prints (None if only single CDC).
     pub cdc0: Option<CdcPort>,
-    /// CDC1 port — shell commands (None if only single CDC).
+    /// CDC1 port — Attentio Protocol interface (None if only single CDC).
     pub cdc1: Option<CdcPort>,
     /// Single CDC port (used when firmware has only one CDC interface).
     pub single_cdc: Option<CdcPort>,
 }
 
 impl AttentioDevice {
-    /// Returns the shell port path (CDC1 if dual, single CDC otherwise).
-    pub fn shell_port(&self) -> Option<&str> {
+    /// Returns the AP (Attentio Protocol) port path (CDC1 if dual, single CDC otherwise).
+    pub fn ap_port(&self) -> Option<&str> {
         self.cdc1
             .as_ref()
             .or(self.single_cdc.as_ref())
@@ -156,10 +155,53 @@ fn detect_device_mode(product: Option<&String>) -> DeviceMode {
 /// and classifies CDC ports (dual CDC: lower port number = CDC0, higher = CDC1).
 /// Also detects pure DFU devices that don't expose serial ports.
 ///
-/// For devices in Normal mode with shell ports, queries device settings
-/// (device name) from the device.
+/// For normal-mode devices with an AP protocol port, queries the `device_name`
+/// setting to populate the `product` field.
 pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
-    find_devices_inner(true).await
+    let ports = serialport::available_ports().map_err(AttentioError::Serial)?;
+
+    debug!("Found {} total serial ports", ports.len());
+    trace!("All ports: {:#?}", ports);
+
+    let mut devices = devices_from_ports(ports);
+
+    // Also check for DFU-only (Bootloader) devices (no serial ports)
+    match find_dfu_only_devices() {
+        Ok(dfu_devices) => {
+            debug!("Found {} DFU-only devices", dfu_devices.len());
+            devices.extend(dfu_devices);
+        }
+        Err(e) => {
+            warn!("Failed to enumerate USB devices for DFU detection: {}", e);
+        }
+    }
+
+    // Query device_name from each normal-mode device via AP protocol.
+    for device in &mut devices {
+        if device.mode != DeviceMode::Normal {
+            continue;
+        }
+        let Some(port_path) = device.ap_port().map(|s| s.to_string()) else {
+            continue;
+        };
+        match query_device_name(&port_path).await {
+            Ok(name) => {
+                debug!("Device {} name: {}", device.serial, name);
+                device.product = Some(name);
+            }
+            Err(e) => {
+                debug!(
+                    "Failed to query device_name for {} on {}: {}",
+                    device.serial, port_path, e
+                );
+            }
+        }
+    }
+
+    // Sort by serial for deterministic output
+    devices.sort_by(|a, b| a.serial.cmp(&b.serial));
+
+    Ok(devices)
 }
 
 /// Lightweight device discovery without opening serial ports.
@@ -191,113 +233,6 @@ pub fn find_devices_fast() -> Result<Vec<AttentioDevice>, AttentioError> {
     devices.sort_by(|a, b| a.serial.cmp(&b.serial));
 
     Ok(devices)
-}
-
-/// Inner implementation shared by `find_devices` and `find_devices_fast`.
-async fn find_devices_inner(query_settings: bool) -> Result<Vec<AttentioDevice>, AttentioError> {
-    let ports = serialport::available_ports().map_err(AttentioError::Serial)?;
-
-    debug!("Found {} total serial ports", ports.len());
-    trace!("All ports: {:#?}", ports);
-
-    let mut devices = devices_from_ports(ports);
-
-    // Also check for DFU-only (Bootloader) devices (no serial ports)
-    match find_dfu_only_devices() {
-        Ok(dfu_devices) => {
-            debug!("Found {} DFU-only devices", dfu_devices.len());
-            devices.extend(dfu_devices);
-        }
-        Err(e) => {
-            warn!("Failed to enumerate USB devices for DFU detection: {}", e);
-        }
-    }
-
-    // Query settings from Normal mode devices (sequentially)
-    if query_settings {
-        for device in &mut devices {
-            if device.mode == DeviceMode::Normal {
-                if let Some(shell_port) = device.shell_port().map(|s| s.to_string()) {
-                    query_device_info(device, &shell_port).await;
-                }
-            }
-        }
-    }
-
-    // Sort by serial for deterministic output
-    devices.sort_by(|a, b| a.serial.cmp(&b.serial));
-
-    Ok(devices)
-}
-
-/// Query device settings from a device over its shell port.
-///
-/// Opens a single connection, syncs the shell, then queries settings
-/// (device name). Serial number is no longer queried here — it comes
-/// from the USB iSerialNumber descriptor. Retries once on failure
-/// with 250ms backoff.
-async fn query_device_info(device: &mut AttentioDevice, shell_port: &str) {
-    const MAX_ATTEMPTS: usize = 2;
-    const RETRY_DELAY: Duration = Duration::from_millis(250);
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        debug!(
-            "Querying device info from {} (attempt {}/{})",
-            shell_port, attempt, MAX_ATTEMPTS
-        );
-
-        if attempt > 1 {
-            debug!("Waiting {}ms before retry...", RETRY_DELAY.as_millis());
-            tokio::time::sleep(RETRY_DELAY).await;
-        }
-
-        // Open connection
-        let mut conn = match DeviceConnection::open(shell_port) {
-            Ok(c) => c,
-            Err(e) => {
-                if matches!(e, AttentioError::PortBusy { .. }) {
-                    debug!("Port busy on {}, device starting up", shell_port);
-                    return;
-                }
-                debug!("Failed to open {}: {}", shell_port, e);
-                if attempt == MAX_ATTEMPTS {
-                    warn!(
-                        "Failed to open {} after {} attempts: {}",
-                        shell_port, MAX_ATTEMPTS, e
-                    );
-                }
-                continue;
-            }
-        };
-
-        // Sync shell
-        if let Err(e) = conn.sync_shell().await {
-            debug!("Failed to sync shell on {}: {}", shell_port, e);
-            if attempt == MAX_ATTEMPTS {
-                warn!(
-                    "Failed to sync shell on {} after {} attempts: {}",
-                    shell_port, MAX_ATTEMPTS, e
-                );
-            }
-            continue;
-        }
-
-        // Query settings (device name)
-        match crate::device::settings::query_device_settings(&mut conn).await {
-            Ok(settings) => {
-                if let Some(name) = settings.device_name {
-                    device.product = Some(name);
-                }
-            }
-            Err(e) => {
-                debug!("Failed to query settings from {}: {}", shell_port, e);
-            }
-        }
-
-        // Success — got at least a connection, no need to retry
-        debug!("Successfully queried device info on attempt {}", attempt);
-        return;
-    }
 }
 
 /// Find devices that are in pure DFU mode (Bootloader) (no CDC serial ports).
@@ -450,6 +385,19 @@ fn read_usb_device_info(usb_serial: &str) -> Option<UsbDeviceInfo> {
     }
 }
 
+/// Query the `device_name` setting from a device via AP protocol.
+///
+/// Opens a short-lived connection to the device's AP port, sends a
+/// SETTINGS_GET("device_name") command, and returns the value.
+async fn query_device_name(port_path: &str) -> Result<String, AttentioError> {
+    // Brief delay to let CDC ACM link settle.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut client = ApClient::open(port_path)?;
+    let (_key, value) = client.settings_get("device_name").await?;
+    Ok(value)
+}
+
 /// Build device list from raw serial port info.
 ///
 /// Filters by VID/PID, groups by serial number, and classifies CDC ports.
@@ -532,7 +480,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
         };
 
         let device = if ports.len() >= 2 {
-            // Dual CDC: first port = CDC0 (debug), second = CDC1 (shell)
+            // Dual CDC: first port = CDC0 (debug), second = CDC1 (protocol)
             debug!(
                 "Device: dual CDC — CDC0={}, CDC1={} — serial={} — mode={}",
                 ports[0].path, ports[1].path, serial, mode
@@ -540,7 +488,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
             AttentioDevice {
                 serial,
                 device_type,
-                product: None, // Will be queried from settings
+                product: None,
                 mode,
                 usb_location,
                 cdc0: Some(CdcPort {
@@ -549,12 +497,12 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
                 }),
                 cdc1: Some(CdcPort {
                     path: ports[1].path.clone(),
-                    role: CdcRole::Shell,
+                    role: CdcRole::Protocol,
                 }),
                 single_cdc: None,
             }
         } else {
-            // Single CDC: treat as shell port
+            // Single CDC
             debug!(
                 "Device: single CDC — {} — serial={} — mode={}",
                 ports[0].path, serial, mode
@@ -562,7 +510,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
             AttentioDevice {
                 serial,
                 device_type,
-                product: None, // Will be queried from settings
+                product: None,
                 mode,
                 usb_location,
                 cdc0: None,

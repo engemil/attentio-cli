@@ -13,21 +13,65 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
-## [Development] (2026-04-09)
+## [Development] (2026-04-10)
 
 Added
 
+- **Attentio Protocol (AP) client library (`src/protocol/`)** — new module implementing
+  the client side of the AP for communicating with the device over CDC1:
+  - `crc.rs` — CRC-8/CCITT lookup table and `crc8()` function (identical to firmware table).
+  - `packet.rs` — protocol constants (SYNC byte, command IDs, error codes), `build_packet()`
+    for constructing AP packets, `ApParser` byte-at-a-time state machine for parsing responses,
+    and `ApResponse` type.
+  - `client.rs` — high-level `ApClient` wrapping `DeviceConnection` with typed methods:
+    `send_command()`, `get_metadata()`, `settings_list()`, `settings_get()`, `settings_set()`.
+    Includes binary key-value payload parsing for count-prefixed lists and single-pair responses.
+  - Unit tests for CRC-8 computation, packet building, parser state machine (including garbage
+    prefix handling and CRC mismatch rejection).
+
+- **`read_raw()` method on `DeviceConnection`** — reads raw bytes from the serial port for
+  the AP response parser. Complements the existing `write_raw()` and `read_line()` methods.
+
 - **Lightweight device enumeration (`find_devices_fast()`)** — new synchronous device
   discovery function that uses USB enumeration only, without opening serial ports or
-  querying the shell. Used by DFU wait loops to avoid 4+ second delays per poll cycle
+  querying the device. Used by DFU wait loops to avoid 4+ second delays per poll cycle
   that caused the 10-second timeouts to overshoot.
 
 Changed
 
-- **DFU enter uses AP binary protocol** — `dfu-enter` and `dfu` (auto-enter) now send a
-  raw 4-byte Attentio Protocol packet (`[0xA5, 0x01, 0x70, 0x42]`) on CDC1 instead of
-  the ChibiOS shell `dfu` text command. Required because the firmware no longer has a
-  shell — CDC1 is now exclusively the AP binary interface.
+- **DFU enter uses Attentio protocol** — `dfu-enter` and `dfu` (auto-enter) now send a
+  raw AP DFU_ENTER packet on CDC1 (built via `build_packet()`) instead of the ChibiOS
+  shell `dfu` text command. Required because the firmware no longer has a shell — CDC1 is
+  now exclusively the AP interface.
+
+- **Metadata command rewritten to use Attentio protocol** — `attentio metadata` now sends
+  `GET_METADATA` (0x43) via the AP interface on CDC1 instead of the old shell text
+  protocol. Displays all metadata fields (firmware version, build date, platform, etc.)
+  in aligned table format or JSON.
+
+- **Settings command rewritten to use Attntio protocol** — `attentio settings` now uses
+  `SETTINGS_LIST` (0x50), `SETTINGS_GET` (0x51), and `SETTINGS_SET` (0x52) via the AP
+  interface. All subcommands preserved: `list`, `get`, `set`, `save`, `load`.
+
+- **Device name query during discovery uses AP protocol** — `find_devices()` now queries
+  each normal-mode device's `device_name` setting via AP `SETTINGS_GET` on CDC1 to populate
+  the `product` field, replacing the old shell-based `query_device_info()`.
+
+- **CDC1 role renamed from "Shell" to "Protocol"** — `CdcRole::Shell` renamed to
+  `CdcRole::Protocol` and `shell_port()` to `ap_port()` throughout the codebase to reflect
+  the protocol change from ChibiOS text shell to AP interface.
+
+Removed
+
+- **Shell command (`attentio shell`)** — removed. The firmware no longer has a ChibiOS
+  text shell; CDC1 is now the Attentio Protocol (AP) interface.
+- **Send command (`attentio send`)** — removed. Relied on the ChibiOS shell text protocol
+  which no longer exists.
+- **TUI shell pane** — the TUI (`attentio tui`) now shows only the debug prints pane
+  (CDC0) at full height. The interactive shell pane, input line, command history, and
+  Tab-to-switch-panes keybinding have been removed.
+- **Shell-related connection code** — removed `send_command()`, `sync_shell()`, and
+  `drain_pending()` from `DeviceConnection`.
 
 Fixed
 

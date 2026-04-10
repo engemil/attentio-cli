@@ -1,6 +1,6 @@
 # Attentio CLI
 
-CLI tool for Attentio device(s) and device management. Designed to be interactive either by intuitive commands (e.g. `attentio help`), send shell command directly (e.g. `attentio send help`), or by using the `tui` command, real-time TUI dashboard with dual CDC (shell and serial prints).
+CLI tool for Attentio device(s) and device management. Designed to be interactive either by intuitive commands (e.g. `attentio help`) or by using the `tui` command for a real-time TUI dashboard monitoring the CDC debug print stream.
 
 **NB!** Tested only on Ubuntu 24.04 
 
@@ -11,11 +11,9 @@ CLI tool for Attentio device(s) and device management. Designed to be interactiv
     - [Install Locally](#install-locally)
     - [udev Rules for Linux (optional)](#udev-rules-for-linux-optional)
 - [Usage](#usage)
-    - [TUI](#tui
+    - [TUI](#tui)
     - [Commands](#commands)
       - [Global Flags](#global-flags)
-      - [Settings File Format](#settings-file-format)
-      - [Quoting Arguments](#quoting-arguments)
 - [License](#license)
 
 ## Setup
@@ -108,24 +106,20 @@ to take effect).
 Without udev rules / group membership you will get **permission denied**:
 ```
 WARN Failed to open debug port /dev/ttyACM1: Permission denied
-WARN Failed to open shell port /dev/ttyACM2: Permission denied
 ```
 
 ## Usage
 
 ### TUI
 
-Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bottom.
+Debug prints dashboard: full-height view of CDC0 debug output stream.
 
-- **Auto-reconnect** — retries every 3 s when a port is unavailable or disconnects mid-session
-- **Port-busy detection** — if another process (minicom, etc.) holds a port, the pane indicates that port is busy and retries until the port is released
-- **Idle disconnect detection** — Detects if any of the ports gets disconnected even when the
-  shell is idle. Clearify marked by reconnecting info.
+- **Auto-reconnect** — retries every 3 s when the port is unavailable or disconnects mid-session
+- **Port-busy detection** — if another process (minicom, etc.) holds the port, the pane indicates that the port is busy and retries until it is released
 
 **TUI Control**
-- **PageUp** / **PageDown** to scroll each pane
-- **Up** / **Down** to recall previous commands
-- **Tab** to switch focus between debug and shell panes
+- **PageUp** / **PageDown** to scroll
+- **Up** / **Down** to scroll one line at a time
 - **Esc** / **CTRL** + **C** to quit
 
 
@@ -133,21 +127,28 @@ Split-pane dashboard: debug prints (CDC0) on top, interactive shell (CDC1) on bo
 
 ```bash
 attentio [--json] list                                                  # List connected devices (index, name, type, status, serial, ports)
-attentio [--json] send <cmd> [args...] [--device <#|serial>]            # One-shot command (supports quoted arguments)
+attentio [--json] metadata [--device <#|serial>]                        # Query device metadata (firmware version, build date, platform, etc.)
+attentio [--json] settings list [--device <#|serial>]                   # List all device settings
+attentio [--json] settings get <key> [--device <#|serial>]              # Get a single setting value
+attentio [--json] settings set <key> <value> [--device <#|serial>]      # Set a setting value
+attentio [--json] settings save <file.json> [--device <#|serial>]       # Save all settings to JSON file
+attentio [--json] settings load <file.json> [--device <#|serial>]       # Load settings from JSON file and apply to device
 attentio led <mode> [options] [--device <#|serial>]                     # LED mode/settings (planned)
-attentio [--json] metadata [--device <#|serial>]                        # List all device metadata (read-only identity/build info)
-attentio [--json] metadata get <key> [--device <#|serial>]              # Read a specific metadata field
-attentio [--json] settings [--device <#|serial>]                        # List all settings (defaults to list)
-attentio [--json] settings list [--device <#|serial>]                   # List all settings
-attentio [--json] settings get <key> [--device <#|serial>]              # Read setting
-attentio [--json] settings set <key> <value> [--device <#|serial>]      # Write setting
-attentio [--json] settings load <file.json> [--device <#|serial>]       # Apply preset from JSON file
-attentio [--json] settings save <file.json> [--device <#|serial>]       # Export settings to JSON file
-attentio shell [--device <#|serial>]                                    # Interactive ChibiOS shell
-attentio tui [--device <#|serial>]                                      # TUI dashboard (dual CDC, auto-reconnect)
+attentio tui [--device <#|serial>]                                      # TUI dashboard (debug prints, auto-reconnect)
 attentio dfu <firmware.bin> [--device <#|serial>]                       # Flash firmware via DFU (auto-enters bootloader if needed)
 attentio dfu-enter [--device <#|serial>]                                # Enter DFU bootloader mode
 attentio bootloader-enter [--device <#|serial>]                         # Same as "dfu-enter"
+```
+
+#### Settings File Format
+
+The `settings save` and `settings load` commands use a simple JSON file:
+
+```json
+{
+  "device_name": "MyAttentioLight",
+  "loglevel": "2"
+}
 ```
 
 ### Global Flags
@@ -157,38 +158,6 @@ attentio bootloader-enter [--device <#|serial>]                         # Same a
 | `-d, --device <#\|serial>` | Target device by index (from `attentio list`) or USB serial number (defaults to only connected device) |
 | `--json` | Output results as JSON with `status` field (`OK` or `ERROR`) for scripting/automation |
 | `-v, --verbose` | Enable verbose/debug output |
-
-### Settings File Format
-
-The `settings load` and `settings save` commands use a JSON file with the following structure:
-
-```json
-{
-  "settings": [
-    { "key": "device_name", "value": "MyDevice" },
-    { "key": "example_setting", "value": "100" }
-  ]
-}
-```
-
-Each entry in the `settings` array contains:
-- `key` — the setting name
-- `value` — the setting value (always a string)
-
-### Quoting Arguments
-
-The `send` command automatically handles arguments with spaces. Both double quotes (`"`) and single quotes (`'`) work identically:
-
-```bash
-# All of these work:
-attentio send echo test           # Single word, no quotes needed
-attentio send echo "test"         # Single word with quotes (quotes removed)
-attentio send echo 'test'         # Single word with single quotes (same as above)
-attentio send echo "test this"    # Multi-word argument (quotes preserved)
-attentio send echo 'test this'    # Multi-word with single quotes (same result)
-```
-
-**Note:** Arguments with embedded quotes (e.g., `'He said "hello"'`) are escaped but may not work correctly due to limitations in the ChibiOS shell parser.
 
 
 

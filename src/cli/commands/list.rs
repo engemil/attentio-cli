@@ -1,12 +1,24 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use serde_json::json;
 
 use crate::device::discovery::{self, find_devices, AttentioDevice};
+use crate::error::AttentioError;
 use crate::json_output;
+
+/// Maximum time allowed for device enumeration (USB scan + per-device AP queries).
+const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Execute the `list` command — enumerate and display connected device(s).
 pub async fn execute(json: bool) -> Result<()> {
-    match find_devices().await {
+    let find_result = tokio::time::timeout(LIST_TIMEOUT, find_devices())
+        .await
+        .map_err(|_| AttentioError::Timeout {
+            seconds: LIST_TIMEOUT.as_secs(),
+        })?;
+
+    match find_result {
         Ok(devices) => {
             if json {
                 print_json(&devices)?;

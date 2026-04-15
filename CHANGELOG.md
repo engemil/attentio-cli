@@ -15,6 +15,14 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ## [Development] (2026-04-15)
 
+Fixed
+
+- **`list` command timeout** — `attentio list` now enforces a 5-second overall timeout
+  on device enumeration (`find_devices()`). Previously, USB enumeration and per-device
+  AP queries could hang indefinitely if the OS-level USB calls stalled or multiple devices
+  each hit the 3-second AP response timeout. Returns `AttentioError::Timeout` on expiry.
+  The `version` command is excluded — it is a purely local operation with no I/O.
+
 Added
 
 - **Human-readable status output** — `attentio status` now displays human-readable

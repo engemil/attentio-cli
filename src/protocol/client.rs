@@ -31,6 +31,10 @@ pub struct DeviceState {
     pub control_mode: u8,
     pub active_controller: u8,
     pub standalone_mode: u8,
+    pub effects_submode: u8,
+    pub standalone_color_index: u8,
+    pub standalone_brightness_raw: u8,
+    pub anim_type: u8,
 }
 
 /// Parsed session info from GET_SESSION response.
@@ -57,6 +61,52 @@ pub fn interface_name(id: u8) -> &'static str {
         2 => "USB",
         3 => "BLE",
         4 => "WiFi",
+        _ => "UNKNOWN",
+    }
+}
+
+/// Human-readable name for system state byte.
+pub fn system_state_name(state: u8) -> &'static str {
+    match state {
+        0 => "BOOT",
+        1 => "POWERUP",
+        2 => "ACTIVE",
+        3 => "POWERDOWN",
+        4 => "OFF",
+        _ => "UNKNOWN",
+    }
+}
+
+/// Human-readable name for standalone mode byte.
+pub fn standalone_mode_name(mode: u8) -> &'static str {
+    match mode {
+        0 => "Solid Color",
+        1 => "Brightness",
+        2 => "Blinking",
+        3 => "Pulsation",
+        4 => "Effects",
+        5 => "Traffic Light",
+        6 => "Night Light",
+        _ => "UNKNOWN",
+    }
+}
+
+/// Human-readable name for effects sub-mode byte.
+pub fn effects_submode_name(submode: u8) -> &'static str {
+    match submode {
+        0 => "Rainbow",
+        1 => "Color Cycle",
+        2 => "Breathing",
+        3 => "Candle",
+        4 => "Fire",
+        5 => "Lava Lamp",
+        6 => "Day/Night",
+        7 => "Ocean",
+        8 => "Northern Lights",
+        9 => "Thunder Storm",
+        10 => "Police",
+        11 => "Health Pulse",
+        12 => "Memory",
         _ => "UNKNOWN",
     }
 }
@@ -258,12 +308,13 @@ impl ApClient {
     /// Query device state (GET_STATE 0x40).
     ///
     /// Returns the current device state including RGB, brightness, mode, etc.
+    /// Supports both 8-byte (legacy firmware) and 12-byte (v2) responses.
     pub async fn get_state(&mut self) -> Result<DeviceState, AttentioError> {
         let payload = self.send_command_ok(CMD_GET_STATE, &[]).await?;
         if payload.len() < 8 {
             return Err(AttentioError::Protocol {
                 message: format!(
-                    "GET_STATE response too short: {} bytes (expected 8)",
+                    "GET_STATE response too short: {} bytes (expected >= 8)",
                     payload.len()
                 ),
             });
@@ -277,6 +328,10 @@ impl ApClient {
             control_mode: payload[5],
             active_controller: payload[6],
             standalone_mode: payload[7],
+            effects_submode: payload.get(8).copied().unwrap_or(0),
+            standalone_color_index: payload.get(9).copied().unwrap_or(0),
+            standalone_brightness_raw: payload.get(10).copied().unwrap_or(0),
+            anim_type: payload.get(11).copied().unwrap_or(0),
         })
     }
 

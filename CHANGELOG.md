@@ -13,6 +13,44 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-04-15)
+
+Added
+
+- **Human-readable status output** — `attentio status` now displays human-readable
+  names for all state fields instead of raw numeric IDs:
+  - System state: BOOT, POWERUP, ACTIVE, POWERDOWN, OFF (was raw number).
+  - Standalone mode: Solid Color, Brightness, Blinking, Pulsation, Effects,
+    Traffic Light, Night Light (was raw number).
+  - Active effect: Rainbow, Color Cycle, Breathing, Candle, Fire, Lava Lamp,
+    Day/Night, Ocean, Northern Lights, Thunder Storm, Police, Health Pulse,
+    Memory (new field, shown when standalone mode is Effects).
+  Added `system_state_name()`, `standalone_mode_name()`, and
+  `effects_submode_name()` mapping functions in `client.rs`.
+
+- **Context-sensitive status display** — the `status` command now adapts its
+  output based on the current control mode:
+  - In STANDALONE: shows standalone mode name and active effect (if in Effects mode).
+  - In REMOTE: shows active controller (USB, BLE, WiFi).
+  - For animated standalone modes (Blinking, Pulsation, Effects): color shows
+    `(dynamic)` and brightness shows the configured standalone brightness level
+    instead of the fluctuating instantaneous animation values.
+
+- **Expanded `DeviceState` struct** — added `effects_submode`, `standalone_color_index`,
+  `standalone_brightness_raw`, and `anim_type` fields. These are parsed from the
+  new 12-byte `GET_STATE` response (firmware update required). Backward compatible
+  with 8-byte responses from older firmware (new fields default to 0).
+
+Changed
+
+- **`status` JSON output enriched** — JSON output now includes human-readable names
+  alongside raw IDs for all fields: `system_state`/`system_state_id`,
+  `standalone_mode`/`standalone_mode_id`, `effects_submode`/`effects_submode_id`,
+  plus new raw fields `standalone_color_index`, `standalone_brightness_raw`, and
+  `anim_type`.
+
+---
+
 ## [Development] (2026-04-10)
 
 Added

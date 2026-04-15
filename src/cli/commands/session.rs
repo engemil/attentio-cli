@@ -3,7 +3,6 @@ use serde_json::json;
 
 use crate::device::discovery::resolve_device;
 use crate::json_output;
-use crate::protocol::client::{control_mode_name, interface_name};
 use crate::protocol::ApClient;
 
 /// Execute the `claim` command — claim control of the device.
@@ -55,34 +54,6 @@ pub async fn execute_ping(device: Option<&str>, json: bool) -> Result<()> {
         println!("{}", json_output::format_success(output));
     } else {
         println!("pong ({}ms)", elapsed.as_millis());
-    }
-
-    Ok(())
-}
-
-/// Execute the `session` command — show session info.
-pub async fn execute_session(device: Option<&str>, json: bool) -> Result<()> {
-    let mut client = open_client(device).await?;
-
-    let session = client
-        .get_session()
-        .await
-        .context("failed to get session info")?;
-
-    let mode_str = control_mode_name(session.mode);
-    let controller_str = interface_name(session.active_controller);
-
-    if json {
-        let output = json!({
-            "mode": mode_str,
-            "mode_id": session.mode,
-            "active_controller": controller_str,
-            "active_controller_id": session.active_controller,
-        });
-        println!("{}", json_output::format_success(output));
-    } else {
-        println!("  Mode:              {}", mode_str);
-        println!("  Active controller: {}", controller_str);
     }
 
     Ok(())

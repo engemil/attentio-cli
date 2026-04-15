@@ -41,6 +41,14 @@ Added
   new 12-byte `GET_STATE` response (firmware update required). Backward compatible
   with 8-byte responses from older firmware (new fields default to 0).
 
+- **Protocol cleanup: renamed GET_STATE to GET_STATUS, removed GET_SESSION** —
+  `CMD_GET_STATE` renamed to `CMD_GET_STATUS` (0x40). `DeviceState` struct renamed
+  to `DeviceStatus`. `get_state()` client method renamed to `get_status()`.
+  `CMD_GET_SESSION` (0x42) removed along with `SessionInfo` struct, `get_session()`
+  method, and `attentio session` CLI command. Session info (control mode, active
+  controller) is already included in the `GET_STATUS` response and displayed by
+  `attentio status`.
+
 Changed
 
 - **`status` JSON output enriched** — JSON output now includes human-readable names

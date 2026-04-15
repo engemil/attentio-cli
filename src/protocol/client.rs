@@ -11,18 +11,18 @@ use crate::device::connection::DeviceConnection;
 use crate::error::AttentioError;
 
 use super::packet::{
-    ap_error_name, build_packet, ApParser, ApResponse, CMD_CLAIM, CMD_GET_METADATA,
-    CMD_GET_SESSION, CMD_GET_STATE, CMD_LED_OFF, CMD_METADATA_GET, CMD_PING, CMD_POWER_OFF,
-    CMD_POWER_ON, CMD_RELEASE, CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET,
-    CMD_SET_BRIGHTNESS, CMD_SET_HSV, CMD_SET_RGB,
+    ap_error_name, build_packet, ApParser, ApResponse, CMD_CLAIM, CMD_GET_METADATA, CMD_GET_STATUS,
+    CMD_LED_OFF, CMD_METADATA_GET, CMD_PING, CMD_POWER_OFF, CMD_POWER_ON, CMD_RELEASE,
+    CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET, CMD_SET_BRIGHTNESS, CMD_SET_HSV,
+    CMD_SET_RGB,
 };
 
 /// Default timeout for AP command responses.
 const AP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Parsed device state from GET_STATE response.
+/// Parsed device status from GET_STATUS response.
 #[derive(Debug, Clone)]
-pub struct DeviceState {
+pub struct DeviceStatus {
     pub system_state: u8,
     pub current_r: u8,
     pub current_g: u8,
@@ -35,13 +35,6 @@ pub struct DeviceState {
     pub standalone_color_index: u8,
     pub standalone_brightness_raw: u8,
     pub anim_type: u8,
-}
-
-/// Parsed session info from GET_SESSION response.
-#[derive(Debug, Clone)]
-pub struct SessionInfo {
-    pub mode: u8,
-    pub active_controller: u8,
 }
 
 /// Human-readable name for control mode byte.
@@ -305,21 +298,21 @@ impl ApClient {
         parse_kv_single(&payload)
     }
 
-    /// Query device state (GET_STATE 0x40).
+    /// Query device status (GET_STATUS 0x40).
     ///
-    /// Returns the current device state including RGB, brightness, mode, etc.
+    /// Returns the current device status including RGB, brightness, mode, etc.
     /// Supports both 8-byte (legacy firmware) and 12-byte (v2) responses.
-    pub async fn get_state(&mut self) -> Result<DeviceState, AttentioError> {
-        let payload = self.send_command_ok(CMD_GET_STATE, &[]).await?;
+    pub async fn get_status(&mut self) -> Result<DeviceStatus, AttentioError> {
+        let payload = self.send_command_ok(CMD_GET_STATUS, &[]).await?;
         if payload.len() < 8 {
             return Err(AttentioError::Protocol {
                 message: format!(
-                    "GET_STATE response too short: {} bytes (expected >= 8)",
+                    "GET_STATUS response too short: {} bytes (expected >= 8)",
                     payload.len()
                 ),
             });
         }
-        Ok(DeviceState {
+        Ok(DeviceStatus {
             system_state: payload[0],
             current_r: payload[1],
             current_g: payload[2],
@@ -332,25 +325,6 @@ impl ApClient {
             standalone_color_index: payload.get(9).copied().unwrap_or(0),
             standalone_brightness_raw: payload.get(10).copied().unwrap_or(0),
             anim_type: payload.get(11).copied().unwrap_or(0),
-        })
-    }
-
-    /// Query session info (GET_SESSION 0x42).
-    ///
-    /// Returns control mode and active controller.
-    pub async fn get_session(&mut self) -> Result<SessionInfo, AttentioError> {
-        let payload = self.send_command_ok(CMD_GET_SESSION, &[]).await?;
-        if payload.len() < 2 {
-            return Err(AttentioError::Protocol {
-                message: format!(
-                    "GET_SESSION response too short: {} bytes (expected 2)",
-                    payload.len()
-                ),
-            });
-        }
-        Ok(SessionInfo {
-            mode: payload[0],
-            active_controller: payload[1],
         })
     }
 

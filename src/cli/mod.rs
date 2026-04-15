@@ -73,9 +73,6 @@ pub enum Command {
     /// Ping the device (keep-alive check).
     Ping,
 
-    /// Show session info (control mode and active controller).
-    Session,
-
     /// Query device status (state, color, brightness, mode).
     Status,
 

@@ -9,7 +9,7 @@ use crate::protocol::client::{
 };
 use crate::protocol::ApClient;
 
-/// Execute the `status` command — query device state.
+/// Execute the `status` command — query device status.
 pub async fn execute(device: Option<&str>, json: bool) -> Result<()> {
     let dev = resolve_device(device)
         .await
@@ -25,47 +25,47 @@ pub async fn execute(device: Option<&str>, json: bool) -> Result<()> {
     let mut client = ApClient::open(&port_path)
         .context(format!("failed to open protocol port {}", port_path))?;
 
-    let state = client
-        .get_state()
+    let status = client
+        .get_status()
         .await
-        .context("failed to get device state")?;
+        .context("failed to get device status")?;
 
-    let sys_state_str = system_state_name(state.system_state);
-    let mode_str = control_mode_name(state.control_mode);
-    let controller_str = interface_name(state.active_controller);
-    let standalone_mode_str = standalone_mode_name(state.standalone_mode);
-    let effects_str = effects_submode_name(state.effects_submode);
+    let sys_state_str = system_state_name(status.system_state);
+    let mode_str = control_mode_name(status.control_mode);
+    let controller_str = interface_name(status.active_controller);
+    let standalone_mode_str = standalone_mode_name(status.standalone_mode);
+    let effects_str = effects_submode_name(status.effects_submode);
 
-    let is_standalone = state.control_mode == 0;
-    let is_effects_mode = state.standalone_mode == 4; // APP_SM_MODE_EFFECTS
+    let is_standalone = status.control_mode == 0;
+    let is_effects_mode = status.standalone_mode == 4; // APP_SM_MODE_EFFECTS
 
     // Animated standalone modes with dynamic color (Blinking=2, Pulsation=3,
     // Effects=4). Solid Color=0, Brightness=1, Traffic Light=5, Night Light=6
     // show meaningful instantaneous RGB.
-    let is_animated = is_standalone && matches!(state.standalone_mode, 2..=4);
+    let is_animated = is_standalone && matches!(status.standalone_mode, 2..=4);
 
     // Configured brightness from standalone_brightness (0-255) scaled to %.
-    let configured_brightness_pct = ((state.standalone_brightness_raw as u16) * 100 / 255) as u8;
+    let configured_brightness_pct = ((status.standalone_brightness_raw as u16) * 100 / 255) as u8;
 
     if json {
         let output = json!({
             "system_state": sys_state_str,
-            "system_state_id": state.system_state,
-            "current_r": state.current_r,
-            "current_g": state.current_g,
-            "current_b": state.current_b,
-            "brightness": state.brightness,
+            "system_state_id": status.system_state,
+            "current_r": status.current_r,
+            "current_g": status.current_g,
+            "current_b": status.current_b,
+            "brightness": status.brightness,
             "control_mode": mode_str,
-            "control_mode_id": state.control_mode,
+            "control_mode_id": status.control_mode,
             "active_controller": controller_str,
-            "active_controller_id": state.active_controller,
+            "active_controller_id": status.active_controller,
             "standalone_mode": standalone_mode_str,
-            "standalone_mode_id": state.standalone_mode,
+            "standalone_mode_id": status.standalone_mode,
             "effects_submode": effects_str,
-            "effects_submode_id": state.effects_submode,
-            "standalone_color_index": state.standalone_color_index,
-            "standalone_brightness_raw": state.standalone_brightness_raw,
-            "anim_type": state.anim_type,
+            "effects_submode_id": status.effects_submode,
+            "standalone_color_index": status.standalone_color_index,
+            "standalone_brightness_raw": status.standalone_brightness_raw,
+            "anim_type": status.anim_type,
         });
         println!("{}", json_output::format_success(output));
     } else {
@@ -77,9 +77,9 @@ pub async fn execute(device: Option<&str>, json: bool) -> Result<()> {
         } else {
             println!(
                 "  Color (RGB):       ({}, {}, {})",
-                state.current_r, state.current_g, state.current_b
+                status.current_r, status.current_g, status.current_b
             );
-            println!("  Brightness:        {}%", state.brightness);
+            println!("  Brightness:        {}%", status.brightness);
         }
 
         println!("  Control mode:      {}", mode_str);

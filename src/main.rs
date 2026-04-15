@@ -62,7 +62,6 @@ async fn main() -> Result<()> {
         Command::Claim => cli::commands::session::execute_claim(global_device, cli.json).await,
         Command::Release => cli::commands::session::execute_release(global_device, cli.json).await,
         Command::Ping => cli::commands::session::execute_ping(global_device, cli.json).await,
-        Command::Session => cli::commands::session::execute_session(global_device, cli.json).await,
 
         // Device status
         Command::Status => cli::commands::status::execute(global_device, cli.json).await,

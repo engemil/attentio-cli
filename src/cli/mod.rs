@@ -27,8 +27,8 @@ pub enum Command {
     /// List connected device(s).
     List,
 
-    /// Launch TUI to monitor CDC debug print stream.
-    Tui {
+    /// Launch monitor to view CDC serial print stream.
+    Monitor {
         /// Target device by serial number or index.
         #[arg(long, short)]
         device: Option<String>,
@@ -88,6 +88,18 @@ pub enum Command {
         action: PowerAction,
     },
 
+    /// Get or set the runtime log level (ephemeral, lost on reboot).
+    ///
+    /// Controls runtime log verbosity. Changes take effect immediately but are
+    /// NOT saved to flash. Use `attentio settings set default_loglevel <N>` to
+    /// change the persistent default that survives reboots.
+    ///
+    /// Levels: 0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG
+    Loglevel {
+        #[command(subcommand)]
+        action: LoglevelAction,
+    },
+
     /// Print CLI version information.
     Version,
 }
@@ -113,7 +125,7 @@ pub enum SettingsAction {
 
     /// Get the value of a single setting.
     Get {
-        /// Setting key name (e.g. "device_name", "loglevel").
+        /// Setting key name (e.g. "device_name", "default_loglevel").
         key: String,
     },
 
@@ -178,4 +190,21 @@ pub enum PowerAction {
     On,
     /// Power off (enter low-power mode).
     Off,
+}
+
+/// Subcommands for `attentio loglevel`.
+#[derive(Debug, Subcommand)]
+pub enum LoglevelAction {
+    /// Get the current runtime log level.
+    Get,
+
+    /// Set the runtime log level (0-4). Lost on reboot.
+    ///
+    /// Levels: 0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG.
+    /// This change is ephemeral. For persistent changes, use:
+    ///   attentio settings set default_loglevel <N>
+    Set {
+        /// Log level (0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG).
+        level: u8,
+    },
 }

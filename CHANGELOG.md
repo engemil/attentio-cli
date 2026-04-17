@@ -13,6 +13,38 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-04-17)
+
+Added
+
+- **`attentio loglevel get/set` command** — new command for runtime (ephemeral) log level
+  control via the `LOG_GET_LEVEL` (0x60) and `LOG_SET_LEVEL` (0x61) protocol commands.
+  Changes take effect immediately but are lost on reboot. For persistent changes, use
+  `attentio settings set default_loglevel <N>`.
+
+- **Monitor log level control** — press `1`-`4` in the monitor to change the runtime log level
+  on the fly (1=ERROR, 2=WARN, 3=INFO, 4=DEBUG). Current level is shown in the status
+  bar with color-coded display. Initial level is queried from the device at startup.
+
+Changed
+
+- **Renamed settings key `loglevel` to `default_loglevel`** — the persistent log level
+  setting is now called `default_loglevel` to distinguish it from the runtime log level.
+  This is a **breaking change** for scripts using `attentio settings set loglevel`.
+
+- **Renamed `tui` command to `monitor`** — the command is now `attentio monitor`. Better
+  reflects its purpose as a monitoring tool for the CDC serial print stream.
+
+- **Faster monitor exit** — ESC/Ctrl+C now exits within ~400ms max instead of potentially
+  seconds. Background tasks are aborted concurrently with a single shared timeout instead
+  of sequentially.
+
+- **Renamed "Debug Prints" to "Serial Prints"** — all CDC0 references in the monitor
+  UI, command help text, and documentation now use "Serial Prints" instead of
+  "Debug Prints".
+
+---
+
 ## [Development] (2026-04-15)
 
 Fixed

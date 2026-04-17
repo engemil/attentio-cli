@@ -1,6 +1,6 @@
 # Attentio CLI
 
-CLI tool for Attentio device(s) and device management. Designed to be interactive either by intuitive commands (e.g. `attentio help`) or by using the `tui` command for a real-time TUI dashboard monitoring the CDC debug print stream.
+CLI tool for Attentio device(s) and device management. Designed to be interactive either by intuitive commands (e.g. `attentio help`) or by using the `monitor` command for a real-time dashboard monitoring the CDC serial print stream.
 
 **NB!** Tested only on Ubuntu 24.04 
 
@@ -11,7 +11,7 @@ CLI tool for Attentio device(s) and device management. Designed to be interactiv
     - [Install Locally](#install-locally)
     - [udev Rules for Linux (optional)](#udev-rules-for-linux-optional)
 - [Usage](#usage)
-    - [TUI](#tui)
+    - [Monitor](#monitor)
     - [Commands](#commands)
       - [Global Flags](#global-flags)
 - [License](#license)
@@ -110,14 +110,15 @@ WARN Failed to open debug port /dev/ttyACM1: Permission denied
 
 ## Usage
 
-### TUI
+### Monitor
 
-Debug prints dashboard: full-height view of CDC0 debug output stream.
+Serial prints dashboard: full-height view of CDC0 serial output stream.
 
 - **Auto-reconnect** — retries every 3 s when the port is unavailable or disconnects mid-session
 - **Port-busy detection** — if another process (minicom, etc.) holds the port, the pane indicates that the port is busy and retries until it is released
 
-**TUI Control**
+**Monitor Controls**
+- **1-4** to set runtime log level (1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)
 - **PageUp** / **PageDown** to scroll
 - **Up** / **Down** to scroll one line at a time
 - **Esc** / **CTRL** + **C** to quit
@@ -150,6 +151,10 @@ attentio [--json] set off [--device <#|serial>]                         # Turn L
 attentio [--json] power on [--device <#|serial>]                        # Wake from low-power mode
 attentio [--json] power off [--device <#|serial>]                       # Enter low-power mode
 
+# Runtime log level (ephemeral, lost on reboot)
+attentio [--json] loglevel get [--device <#|serial>]                    # Get current runtime log level
+attentio [--json] loglevel set <0-4> [--device <#|serial>]              # Set runtime log level (0=NONE..4=DEBUG)
+
 # Settings (set/load auto-claim if needed)
 attentio [--json] settings list [--device <#|serial>]                   # List all device settings
 attentio [--json] settings get <key> [--device <#|serial>]              # Get a single setting value
@@ -158,7 +163,7 @@ attentio [--json] settings save <file.json> [--device <#|serial>]       # Save a
 attentio [--json] settings load <file.json> [--device <#|serial>]       # Load settings from JSON file and apply
 
 # Interactive
-attentio tui [--device <#|serial>]                                      # TUI dashboard (debug prints, auto-reconnect)
+attentio monitor [--device <#|serial>]                                  # Monitor dashboard (serial prints, log level control)
 
 # Firmware update
 attentio [--json] dfu <firmware.bin> [--device <#|serial>]              # Flash firmware via DFU (auto-enters bootloader if needed)
@@ -181,7 +186,7 @@ The `settings save` and `settings load` commands use a simple JSON file:
 ```json
 {
   "device_name": "MyAttentioLight",
-  "loglevel": "2"
+  "default_loglevel": "2"
 }
 ```
 

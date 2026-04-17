@@ -62,7 +62,7 @@ impl DeviceConnection {
         self
     }
 
-    /// Read a single line from the port (useful for debug print streams).
+    /// Read a single line from the port (useful for serial print streams).
     pub async fn read_line(&mut self) -> Result<String, AttentioError> {
         let mut line = String::new();
 

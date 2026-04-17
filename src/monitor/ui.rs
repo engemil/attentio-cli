@@ -20,7 +20,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_status_bar(frame, app, chunks[1]);
 }
 
-/// Render the debug prints pane (CDC0).
+/// Render the serial prints pane (CDC0).
 fn render_debug_pane(frame: &mut Frame, app: &App, area: Rect) {
     let border_style = Style::default().fg(Color::Cyan);
 
@@ -30,17 +30,17 @@ fn render_debug_pane(frame: &mut Frame, app: &App, area: Rect) {
         app.debug_reconnecting,
         app.debug_port_busy,
     ) {
-        (Some(path), true, _, _) => format!(" Debug Prints (CDC0) \u{2014} {} ", path),
+        (Some(path), true, _, _) => format!(" Serial Prints (CDC0) \u{2014} {} ", path),
         (Some(path), false, _, true) => {
-            format!(" Debug Prints (CDC0) \u{2014} {} (PORT BUSY) ", path)
+            format!(" Serial Prints (CDC0) \u{2014} {} (PORT BUSY) ", path)
         }
         (Some(path), false, true, _) => {
-            format!(" Debug Prints (CDC0) \u{2014} {} (reconnecting...) ", path)
+            format!(" Serial Prints (CDC0) \u{2014} {} (reconnecting...) ", path)
         }
         (Some(path), false, false, false) => {
-            format!(" Debug Prints (CDC0) \u{2014} {} (not connected) ", path)
+            format!(" Serial Prints (CDC0) \u{2014} {} (not connected) ", path)
         }
-        (None, _, _, _) => " Debug Prints (CDC0) \u{2014} (not connected) ".to_string(),
+        (None, _, _, _) => " Serial Prints (CDC0) \u{2014} (not connected) ".to_string(),
     };
 
     let block = Block::default()
@@ -99,7 +99,7 @@ fn render_debug_pane(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the bottom status bar with device info and key hints.
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let hints = vec![
+    let mut hints = vec![
         Span::styled(" ", Style::default()),
         Span::styled(
             format!("[{}] ", app.device_serial),
@@ -107,11 +107,32 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("PgUp/PgDn", Style::default().fg(Color::DarkGray)),
+    ];
+
+    // Show current runtime log level
+    {
+        let (label, color) = match app.log_level {
+            Some(0) => ("Log:NONE ", Color::DarkGray),
+            Some(1) => ("Log:ERROR ", Color::Red),
+            Some(2) => ("Log:WARN ", Color::Yellow),
+            Some(3) => ("Log:INFO ", Color::Green),
+            Some(4) => ("Log:DEBUG ", Color::Magenta),
+            _ => ("Log:? ", Color::DarkGray),
+        };
+        hints.push(Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    hints.extend([
+        Span::styled("1-4", Style::default().fg(Color::DarkGray)),
+        Span::styled("=loglevel ", Style::default().fg(Color::DarkGray)),
+        Span::styled("| PgUp/PgDn", Style::default().fg(Color::DarkGray)),
         Span::styled("=scroll ", Style::default().fg(Color::DarkGray)),
         Span::styled("| Esc", Style::default().fg(Color::DarkGray)),
         Span::styled("=quit ", Style::default().fg(Color::DarkGray)),
-    ];
+    ]);
 
     let status_line = Line::from(hints);
     let status_bar =

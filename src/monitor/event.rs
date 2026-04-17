@@ -32,6 +32,11 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> Action {
             app.scroll_down(1);
             Action::None
         }
+        // 1-4: set runtime log level
+        KeyCode::Char('1') => Action::SetLogLevel(1), // ERROR
+        KeyCode::Char('2') => Action::SetLogLevel(2), // WARN
+        KeyCode::Char('3') => Action::SetLogLevel(3), // INFO
+        KeyCode::Char('4') => Action::SetLogLevel(4), // DEBUG
         _ => Action::None,
     }
 }

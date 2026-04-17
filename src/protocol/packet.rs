@@ -43,6 +43,10 @@ pub const CMD_SETTINGS_LIST: u8 = 0x50;
 pub const CMD_SETTINGS_GET: u8 = 0x51;
 pub const CMD_SETTINGS_SET: u8 = 0x52;
 
+// Log control (0x60-0x6F)
+pub const CMD_LOG_GET_LEVEL: u8 = 0x60;
+pub const CMD_LOG_SET_LEVEL: u8 = 0x61;
+
 // DFU (0x70-0x7F)
 pub const CMD_DFU_ENTER: u8 = 0x70;
 

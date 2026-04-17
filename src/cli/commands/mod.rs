@@ -1,10 +1,11 @@
 pub mod dfu;
 pub mod list;
+pub mod loglevel;
 pub mod metadata;
+pub mod monitor;
 pub mod power;
 pub mod session;
 pub mod set;
 pub mod settings;
 pub mod status;
-pub mod tui;
 pub mod version;

@@ -35,7 +35,7 @@ impl std::fmt::Display for DeviceMode {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CdcRole {
-    /// Debug print stream (read-only).
+    /// Serial print stream (read-only).
     DebugPrints,
     /// Attentio Protocol (AP) interface.
     Protocol,
@@ -77,7 +77,7 @@ pub struct AttentioDevice {
     pub mode: DeviceMode,
     /// USB bus location string (e.g. "Bus 001 Device 060") for physical identification.
     pub usb_location: Option<String>,
-    /// CDC0 port — debug prints (None if only single CDC).
+    /// CDC0 port — serial prints (None if only single CDC).
     pub cdc0: Option<CdcPort>,
     /// CDC1 port — Attentio Protocol interface (None if only single CDC).
     pub cdc1: Option<CdcPort>,
@@ -94,7 +94,7 @@ impl AttentioDevice {
             .map(|p| p.path.as_str())
     }
 
-    /// Returns the debug prints port path (CDC0 if dual, None otherwise).
+    /// Returns the serial prints port path (CDC0 if dual, None otherwise).
     pub fn debug_port(&self) -> Option<&str> {
         self.cdc0.as_ref().map(|p| p.path.as_str())
     }

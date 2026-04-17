@@ -3,7 +3,7 @@ mod device;
 mod error;
 mod json_output;
 mod protocol;
-mod tui;
+mod monitor;
 
 use anyhow::Result;
 use clap::Parser;
@@ -35,9 +35,9 @@ async fn main() -> Result<()> {
     let result = match &cli.command {
         Command::List => cli::commands::list::execute(cli.json).await,
 
-        Command::Tui { device } => {
+        Command::Monitor { device } => {
             let device = device.as_deref().or(global_device);
-            cli::commands::tui::execute(device).await
+            cli::commands::monitor::execute(device).await
         }
 
         Command::Dfu { firmware, device } => {
@@ -74,6 +74,11 @@ async fn main() -> Result<()> {
         // Power control
         Command::Power { action } => {
             cli::commands::power::execute(action, global_device, cli.json).await
+        }
+
+        // Runtime log level control
+        Command::Loglevel { action } => {
+            cli::commands::loglevel::execute(action, global_device, cli.json).await
         }
 
         // Version info

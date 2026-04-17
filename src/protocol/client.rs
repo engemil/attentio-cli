@@ -12,9 +12,9 @@ use crate::error::AttentioError;
 
 use super::packet::{
     ap_error_name, build_packet, ApParser, ApResponse, CMD_CLAIM, CMD_GET_METADATA, CMD_GET_STATUS,
-    CMD_LED_OFF, CMD_METADATA_GET, CMD_PING, CMD_POWER_OFF, CMD_POWER_ON, CMD_RELEASE,
-    CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET, CMD_SET_BRIGHTNESS, CMD_SET_HSV,
-    CMD_SET_RGB,
+    CMD_LED_OFF, CMD_LOG_GET_LEVEL, CMD_LOG_SET_LEVEL, CMD_METADATA_GET, CMD_PING, CMD_POWER_OFF,
+    CMD_POWER_ON, CMD_RELEASE, CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET,
+    CMD_SET_BRIGHTNESS, CMD_SET_HSV, CMD_SET_RGB,
 };
 
 /// Default timeout for AP command responses.
@@ -424,6 +424,32 @@ impl ApClient {
         req.extend_from_slice(value.as_bytes());
 
         self.send_command_ok(CMD_SETTINGS_SET, &req).await?;
+        Ok(())
+    }
+
+    // ── Log level commands ───────────────────────────────────────────────────
+
+    /// Get the current runtime log level (LOG_GET_LEVEL 0x60).
+    ///
+    /// Returns the level as a u8: 0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG.
+    pub async fn log_get_level(&mut self) -> Result<u8, AttentioError> {
+        let payload = self.send_command_ok(CMD_LOG_GET_LEVEL, &[]).await?;
+        if payload.is_empty() {
+            return Err(AttentioError::Protocol {
+                message: "LOG_GET_LEVEL response has no payload".to_string(),
+            });
+        }
+        Ok(payload[0])
+    }
+
+    /// Set the runtime log level (LOG_SET_LEVEL 0x61).
+    ///
+    /// This is ephemeral — the change is lost on reboot. Use
+    /// `settings_set("default_loglevel", ...)` for persistent changes.
+    ///
+    /// Level: 0=NONE, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG.
+    pub async fn log_set_level(&mut self, level: u8) -> Result<(), AttentioError> {
+        self.send_command_ok(CMD_LOG_SET_LEVEL, &[level]).await?;
         Ok(())
     }
 }

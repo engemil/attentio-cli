@@ -18,15 +18,16 @@ use tracing::{debug, info, warn};
 use crate::device::connection::DeviceConnection;
 use crate::device::discovery::resolve_device;
 use crate::error::AttentioError;
-use crate::tui::app::{Action, App};
-use crate::tui::{event as tui_event, ui};
+use crate::monitor::app::{Action, App};
+use crate::monitor::{event as monitor_event, ui};
+use crate::protocol::ApClient;
 
 /// Interval between reconnection attempts for disconnected ports.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Messages sent from background reader tasks to the main event loop.
 enum ReaderMsg {
-    /// A line received from the debug prints port (CDC0).
+    /// A line received from the serial prints port (CDC0).
     DebugLine(String),
     /// The debug port reader encountered an unrecoverable error.
     DebugError(String),
@@ -43,9 +44,9 @@ fn restore_terminal() {
     let _ = io::stdout().execute(LeaveAlternateScreen);
 }
 
-/// Execute the `tui` command — TUI dashboard with CDC debug view.
+/// Execute the `monitor` command — monitor dashboard with CDC debug view.
 ///
-/// Shows a single full-height pane for debug prints (CDC0). If the port
+/// Shows a single full-height pane for serial prints (CDC0). If the port
 /// fails to open, a background task retries every few seconds until it
 /// becomes available.
 pub async fn execute(device: Option<&str>) -> Result<()> {
@@ -55,9 +56,10 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
         .context("failed to resolve device")?;
 
     let debug_port_path = dev.debug_port().map(|s| s.to_string());
+    let ap_port_path = dev.ap_port().map(|s| s.to_string());
 
     info!(
-        "Starting TUI for {} — debug: {}",
+        "Starting monitor for {} — debug: {}",
         dev.serial,
         debug_port_path.as_deref().unwrap_or("none"),
     );
@@ -68,7 +70,7 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     // Track spawned tasks so we can abort them on exit
     let mut task_handles: Vec<JoinHandle<()>> = Vec::new();
 
-    // --- Try to open CDC0 (debug prints) ---
+    // --- Try to open CDC0 (serial prints) ---
     let mut debug_connected = false;
     let mut debug_reconnecting = false;
     let mut debug_port_busy = false;
@@ -111,9 +113,32 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     }
 
     // Create app state with connection status
-    let mut app = App::new(dev.serial.clone(), debug_port_path, debug_connected);
+    let mut app = App::new(
+        dev.serial.clone(),
+        debug_port_path,
+        debug_connected,
+        ap_port_path,
+    );
     app.debug_reconnecting = debug_reconnecting;
     app.debug_port_busy = debug_port_busy;
+
+    // Try to query the initial runtime log level
+    if let Some(ref path) = app.ap_port_path {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        match ApClient::open(path) {
+            Ok(mut client) => match client.log_get_level().await {
+                Ok(level) => {
+                    app.log_level = Some(level);
+                }
+                Err(e) => {
+                    debug!("Could not query initial log level: {}", e);
+                }
+            },
+            Err(e) => {
+                debug!("Could not open AP port for log level query: {}", e);
+            }
+        }
+    }
 
     // Channel for terminal events (polled from a blocking thread)
     let (term_tx, mut term_rx) = mpsc::channel::<Event>(64);
@@ -143,7 +168,7 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
         }
     });
 
-    // Enter TUI mode and run the event loop.
+    // Enter monitor mode and run the event loop.
     // Wrapped so that cleanup (task abort, terminal restore) always runs,
     // even if enable_raw_mode() or EnterAlternateScreen fails.
     let result = async {
@@ -164,31 +189,34 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     .await;
 
     // Always clean up: signal the terminal polling thread to stop, abort async tasks.
-    // This runs whether the TUI launched successfully or failed at setup.
+    // This runs whether the monitor launched successfully or failed at setup.
     shutdown.store(true, Ordering::Relaxed);
 
-    // Abort each async task and then await it so the tokio runtime actually
-    // drives the cancellation future to completion and drops the DeviceConnection
-    // (which clears TIOCEXCL). Without awaiting, the fd may still be open when
-    // the next command runs its /proc busy-check.
-    for handle in task_handles {
+    // Abort all async tasks first so they begin cancellation immediately,
+    // then await them all concurrently within a single timeout. This avoids
+    // stacking per-task timeouts when many reconnect tasks have accumulated.
+    for handle in &task_handles {
         handle.abort();
-        // Ignore JoinError — an aborted task always returns Err(JoinError::Cancelled)
-        let _ = tokio::time::timeout(Duration::from_millis(500), handle).await;
     }
+    let _ = tokio::time::timeout(Duration::from_millis(300), async {
+        for handle in task_handles {
+            let _ = handle.await;
+        }
+    })
+    .await;
 
     // Wait briefly for the polling thread to notice the shutdown flag
-    let _ = tokio::time::timeout(Duration::from_millis(200), term_handle).await;
+    let _ = tokio::time::timeout(Duration::from_millis(100), term_handle).await;
 
     // Restore terminal — always, regardless of success or failure
     restore_terminal();
 
-    eprintln!("TUI session ended.");
+    eprintln!("Monitor session ended.");
 
     result
 }
 
-/// The main TUI event loop. Separated so we can guarantee terminal restore via the caller.
+/// The main event loop. Separated so we can guarantee terminal restore via the caller.
 async fn run_event_loop(
     app: &mut App,
     rx: &mut mpsc::Receiver<ReaderMsg>,
@@ -201,7 +229,7 @@ async fn run_event_loop(
 
     // Add initial status messages
     if app.debug_connected {
-        app.push_debug_line("Listening for debug prints...".to_string());
+        app.push_debug_line("Listening for serial prints...".to_string());
     }
 
     app.push_debug_line("Press Esc or Ctrl+C to quit.".to_string());
@@ -217,9 +245,45 @@ async fn run_event_loop(
                 match maybe_event {
                     Some(Event::Key(key)) => {
                         if key.kind == KeyEventKind::Press {
-                            let action = tui_event::handle_key_event(app, key);
+                            let action = monitor_event::handle_key_event(app, key);
                             match action {
                                 Action::Quit => break,
+                                Action::SetLogLevel(level) => {
+                                    // Send LOG_SET_LEVEL via AP port
+                                    if let Some(ref path) = app.ap_port_path {
+                                        match ApClient::open(path) {
+                                            Ok(mut client) => {
+                                                match client.log_set_level(level).await {
+                                                    Ok(()) => {
+                                                        app.log_level = Some(level);
+                                                        let name = match level {
+                                                            0 => "NONE", 1 => "ERROR",
+                                                            2 => "WARN", 3 => "INFO",
+                                                            4 => "DEBUG", _ => "?",
+                                                        };
+                                                        app.push_debug_line(format!(
+                                                            "[Log level set to {} ({})]", level, name
+                                                        ));
+                                                    }
+                                                    Err(e) => {
+                                                        app.push_debug_line(format!(
+                                                            "[Failed to set log level: {}]", e
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                app.push_debug_line(format!(
+                                                    "[Failed to open AP port: {}]", e
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        app.push_debug_line(
+                                            "[No AP port available for log level control]".to_string()
+                                        );
+                                    }
+                                }
                                 Action::None => {}
                             }
                             true
@@ -259,7 +323,7 @@ async fn run_event_loop(
                         app.debug_connected = true;
                         app.debug_reconnecting = false;
                         app.debug_port_busy = false;
-                        app.push_debug_line("Reconnected. Listening for debug prints...".to_string());
+                        app.push_debug_line("Reconnected. Listening for serial prints...".to_string());
                         info!("Debug port reconnected");
                     }
                     ReaderMsg::DebugPortBusy(msg) => {
@@ -292,7 +356,7 @@ async fn debug_reader_task(mut conn: DeviceConnection, tx: mpsc::Sender<ReaderMs
                 }
             }
             Err(AttentioError::Timeout { .. }) => {
-                // No data within timeout — this is normal for sporadic debug prints.
+                // No data within timeout — this is normal for sporadic serial prints.
                 // Just continue polling.
                 continue;
             }
@@ -309,7 +373,7 @@ async fn debug_reader_task(mut conn: DeviceConnection, tx: mpsc::Sender<ReaderMs
 ///
 /// On success, spawns a new `debug_reader_task` and notifies the main loop.
 /// If the port is busy (held by another process), notifies the main loop so the
-/// TUI can display the busy status, then keeps retrying in case the port is
+/// monitor can display the busy status, then keeps retrying in case the port is
 /// released.
 async fn debug_reconnect_task(port_path: String, tx: mpsc::Sender<ReaderMsg>) {
     loop {
@@ -331,7 +395,7 @@ async fn debug_reconnect_task(port_path: String, tx: mpsc::Sender<ReaderMsg>) {
                 return;
             }
             Err(e) if e.is_port_busy() => {
-                // Port is held by another process — notify TUI and keep retrying.
+                // Port is held by another process — notify monitor and keep retrying.
                 let _ = tx.send(ReaderMsg::DebugPortBusy(e.to_string())).await;
                 continue;
             }

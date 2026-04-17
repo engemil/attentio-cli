@@ -8,11 +8,13 @@ pub enum Action {
     None,
     /// User requested quit.
     Quit,
+    /// User requested a runtime log level change.
+    SetLogLevel(u8),
 }
 
 /// Application state for the TUI.
 pub struct App {
-    /// CDC0 debug print lines (oldest first).
+    /// CDC0 serial print lines (oldest first).
     pub debug_lines: Vec<String>,
 
     /// Scroll offset for the debug pane (0 = pinned to bottom / latest).
@@ -35,6 +37,10 @@ pub struct App {
     pub device_serial: String,
     /// CDC0 port path (for display).
     pub debug_port_path: Option<String>,
+    /// AP protocol port path (for log level commands).
+    pub ap_port_path: Option<String>,
+    /// Current runtime log level (None if not yet queried).
+    pub log_level: Option<u8>,
 }
 
 impl App {
@@ -43,6 +49,7 @@ impl App {
         device_serial: String,
         debug_port_path: Option<String>,
         debug_connected: bool,
+        ap_port_path: Option<String>,
     ) -> Self {
         Self {
             debug_lines: Vec::new(),
@@ -53,6 +60,8 @@ impl App {
             running: true,
             device_serial,
             debug_port_path,
+            ap_port_path,
+            log_level: None,
         }
     }
 

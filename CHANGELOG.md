@@ -17,6 +17,22 @@ Note: Update `Cargo.toml` when publishing new version.
 
 Added
 
+- **Session ID support** — the CLI now parses and displays the session ID assigned by
+  the device on CLAIM.
+  - `claim()` returns the `u16` session ID from the CLAIM OK response (2-byte big-endian
+    payload). `attentio claim` prints the session ID in both plain text and JSON output.
+  - `DeviceStatus` gains a `session_id` field, parsed from GET_STATUS response bytes
+    12-13 (big-endian). `attentio status` shows the session ID when in REMOTE mode;
+    JSON output always includes it.
+  - Monitor's SESSION_END event display now includes the session ID when present in the
+    3-byte event payload (`← EVT_SESSION_END TAKEOVER (session 3)`).
+
+---
+
+## [Development] (2026-04-19)
+
+Added
+
 - **Two-pane monitor layout** — `attentio monitor` now shows two panes:
   - **Top pane:** AP protocol traffic (CDC1) — incoming responses (`← OK`, `← ERROR`),
     device events (`← EVT_BUTTON SHORT_PRESS`, `← EVT_SESSION_END RELEASED`), and

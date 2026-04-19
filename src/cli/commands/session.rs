@@ -9,13 +9,19 @@ use crate::protocol::ApClient;
 pub async fn execute_claim(device: Option<&str>, json: bool) -> Result<()> {
     let mut client = open_client(device).await?;
 
-    client.claim().await.context("failed to claim device")?;
+    let session_id = client.claim().await.context("failed to claim device")?;
 
     if json {
-        let output = json!({ "message": "Device claimed (remote mode active)" });
+        let output = json!({
+            "message": "Device claimed (remote mode active)",
+            "session_id": session_id,
+        });
         println!("{}", json_output::format_success(output));
     } else {
-        println!("Device claimed. Remote mode active.");
+        println!(
+            "Device claimed. Remote mode active. Session ID: {}",
+            session_id
+        );
     }
 
     Ok(())

@@ -35,6 +35,7 @@ pub struct DeviceStatus {
     pub standalone_color_index: u8,
     pub standalone_brightness_raw: u8,
     pub anim_type: u8,
+    pub session_id: u16,
 }
 
 /// Human-readable name for control mode byte.
@@ -223,12 +224,18 @@ impl ApClient {
     /// Claim control of the device (CLAIM 0x01).
     ///
     /// Transitions device from STANDALONE to REMOTE mode (or takes over from
-    /// another controller). After a successful claim, the client can issue
-    /// commands that require claim (LED, power, settings set).
-    pub async fn claim(&mut self) -> Result<(), AttentioError> {
-        self.send_command_ok(CMD_CLAIM, &[]).await?;
+    /// another controller). Returns the session ID assigned by the device.
+    /// After a successful claim, the client can issue commands that require
+    /// claim (LED, power, settings set).
+    pub async fn claim(&mut self) -> Result<u16, AttentioError> {
+        let payload = self.send_command_ok(CMD_CLAIM, &[]).await?;
         self.claimed = true;
-        Ok(())
+        let session_id = if payload.len() >= 2 {
+            u16::from_be_bytes([payload[0], payload[1]])
+        } else {
+            0
+        };
+        Ok(session_id)
     }
 
     /// Release control of the device (RELEASE 0x02).
@@ -325,6 +332,11 @@ impl ApClient {
             standalone_color_index: payload.get(9).copied().unwrap_or(0),
             standalone_brightness_raw: payload.get(10).copied().unwrap_or(0),
             anim_type: payload.get(11).copied().unwrap_or(0),
+            session_id: {
+                let hi = payload.get(12).copied().unwrap_or(0) as u16;
+                let lo = payload.get(13).copied().unwrap_or(0) as u16;
+                (hi << 8) | lo
+            },
         })
     }
 

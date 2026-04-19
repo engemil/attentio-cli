@@ -36,7 +36,20 @@ pub fn format_incoming(resp: &ApResponse) -> String {
         }
         CMD_EVT_SESSION_END => {
             let reason = resp.payload.first().copied().unwrap_or(0);
-            format!("← EVT_SESSION_END {}", session_end_reason(reason))
+            let session_id = if resp.payload.len() >= 3 {
+                u16::from_be_bytes([resp.payload[1], resp.payload[2]])
+            } else {
+                0
+            };
+            if session_id > 0 {
+                format!(
+                    "← EVT_SESSION_END {} (session {})",
+                    session_end_reason(reason),
+                    session_id
+                )
+            } else {
+                format!("← EVT_SESSION_END {}", session_end_reason(reason))
+            }
         }
         _ => {
             // Unknown incoming packet — show raw

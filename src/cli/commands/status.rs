@@ -66,6 +66,7 @@ pub async fn execute(device: Option<&str>, json: bool) -> Result<()> {
             "standalone_color_index": status.standalone_color_index,
             "standalone_brightness_raw": status.standalone_brightness_raw,
             "anim_type": status.anim_type,
+            "session_id": status.session_id,
         });
         println!("{}", json_output::format_success(output));
     } else {
@@ -91,6 +92,7 @@ pub async fn execute(device: Option<&str>, json: bool) -> Result<()> {
             }
         } else {
             println!("  Active controller: {}", controller_str);
+            println!("  Session ID:        {}", status.session_id);
         }
     }
 

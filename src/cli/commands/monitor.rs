@@ -376,14 +376,7 @@ async fn handle_set_log_level(app: &mut App, ap_cmd_tx: &mpsc::Sender<Vec<u8>>, 
     // The outgoing command is displayed by ap_reader_writer_task when it
     // dequeues the packet, so we don't push an AP line here.
     app.log_level = Some(level);
-    let name = match level {
-        0 => "NONE",
-        1 => "ERROR",
-        2 => "WARN",
-        3 => "INFO",
-        4 => "DEBUG",
-        _ => "?",
-    };
+    let name = super::loglevel::level_name(level);
     app.push_serial_line(format!("[Log level set to {} ({})]", level, name));
 }
 

@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use crate::device::discovery::resolve_device;
 use crate::json_output;
-use crate::protocol::ApClient;
+use crate::protocol::open_client;
 
 /// Execute the `claim` command — claim control of the device.
 pub async fn execute_claim(device: Option<&str>, json: bool) -> Result<()> {
@@ -63,20 +62,4 @@ pub async fn execute_ping(device: Option<&str>, json: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Open an AP client for the resolved device.
-async fn open_client(device: Option<&str>) -> Result<ApClient> {
-    let dev = resolve_device(device)
-        .await
-        .context("failed to resolve device")?;
-
-    let port_path = dev
-        .ap_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no protocol port", dev.serial))?
-        .to_string();
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    ApClient::open(&port_path).context(format!("failed to open protocol port {}", port_path))
 }

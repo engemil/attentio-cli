@@ -4,10 +4,10 @@ use serde_json::json;
 use crate::json_output;
 
 /// Execute the `version` command — print CLI version.
-pub async fn execute(json_flag: bool) -> Result<()> {
+pub async fn execute(json: bool) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
 
-    if json_flag {
+    if json {
         let output = json!({
             "version": version,
         });

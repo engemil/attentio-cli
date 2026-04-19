@@ -8,7 +8,7 @@ use rusb::UsbContext;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::device::config::{ATTENTIO_PID, ATTENTIO_VID};
+use crate::device::config::{self, ATTENTIO_PID, ATTENTIO_VID};
 use crate::device::connection::DeviceConnection;
 use crate::device::discovery::{find_devices, find_devices_fast, resolve_device, DeviceMode};
 use crate::json_output;
@@ -130,30 +130,19 @@ impl FirmwareHeader {
 
 /// Execute the `dfu-enter` command — reboot device into DFU bootloader.
 pub async fn execute_enter(device: Option<&str>, json: bool) -> Result<()> {
-    match execute_enter_internal(device).await {
-        Ok(serial) => {
-            if json {
-                let output = json!({
-                    "device": serial,
-                    "action": "dfu-enter",
-                    "message": "Device entered bootloader (DFU) mode",
-                });
-                println!("{}", json_output::format_success(output));
-            } else {
-                println!("Device '{}' entered bootloader (DFU) mode.", serial);
-            }
-            Ok(())
-        }
-        Err(e) => {
-            if json {
-                let context = json!({ "action": "dfu-enter" });
-                println!("{}", json_output::format_error(&e, context));
-            } else {
-                eprintln!("Error: {:#}", e);
-            }
-            Err(e)
-        }
+    let serial = execute_enter_internal(device).await?;
+
+    if json {
+        let output = json!({
+            "device": serial,
+            "action": "dfu-enter",
+            "message": "Device entered bootloader (DFU) mode",
+        });
+        println!("{}", json_output::format_success(output));
+    } else {
+        println!("Device '{}' entered bootloader (DFU) mode.", serial);
     }
+    Ok(())
 }
 
 /// Internal: send the AP DFU_ENTER command to reboot the device into bootloader.
@@ -222,82 +211,68 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     eprintln!("Waiting for device to enter bootloader (DFU) mode...");
     tokio::time::sleep(POST_REBOOT_DELAY).await;
 
-    wait_for_dfu_device(Some(&serial)).await?;
+    wait_for_device_mode(
+        DeviceMode::Bootloader,
+        Some(&serial),
+        DFU_ENTER_TIMEOUT,
+        true,
+    )
+    .await?;
 
     Ok(serial)
 }
 
-/// Poll until a specific DFU device appears on USB, or timeout.
+/// Poll until a device with the specified mode appears on USB, or timeout.
 ///
-/// If `serial` is provided, waits for a bootloader device with that serial.
-/// Otherwise waits for any bootloader device.
+/// If `serial` is provided, waits for a device with that serial.
+/// Otherwise waits for any device in the target mode.
 ///
-/// Uses lightweight enumeration (no shell queries) since we only need to
+/// Uses lightweight enumeration (no AP queries) since we only need to
 /// detect device presence and mode.
-async fn wait_for_dfu_device(serial: Option<&str>) -> Result<()> {
+async fn wait_for_device_mode(
+    target_mode: DeviceMode,
+    serial: Option<&str>,
+    timeout: Duration,
+    hard_error: bool,
+) -> Result<()> {
     let start = Instant::now();
+    let mode_label = match target_mode {
+        DeviceMode::Bootloader => "bootloader",
+        DeviceMode::Normal => "normal",
+        DeviceMode::Unknown => "unknown",
+    };
 
     loop {
         let devices = find_devices_fast().unwrap_or_default();
         let found = devices
             .iter()
-            .any(|d| d.mode == DeviceMode::Bootloader && serial.is_none_or(|s| d.serial == s));
+            .any(|d| d.mode == target_mode && serial.is_none_or(|s| d.serial == s));
 
         if found {
             debug!(
-                "DFU device detected in bootloader mode (serial: {})",
+                "Device detected in {} mode (serial: {})",
+                mode_label,
                 serial.unwrap_or("any")
             );
             return Ok(());
         }
 
-        if start.elapsed() > DFU_ENTER_TIMEOUT {
-            anyhow::bail!(
-                "timed out waiting for device to enter bootloader mode ({:.0}s) — \
-                 device may not have rebooted correctly",
-                DFU_ENTER_TIMEOUT.as_secs_f64()
-            );
-        }
-
-        tokio::time::sleep(DFU_POLL_INTERVAL).await;
-    }
-}
-
-/// Poll until a specific Normal-mode device re-appears, or timeout.
-///
-/// If `serial` is provided, waits for a normal device with that serial.
-/// Otherwise waits for any normal device.
-///
-/// Uses lightweight enumeration (no shell queries) to avoid blocking on
-/// serial port I/O while waiting for the device to reboot. Shell queries
-/// can take several seconds each when the firmware doesn't respond (e.g.,
-/// no shell, or firmware still initializing), which would cause the timeout
-/// to overshoot significantly.
-async fn wait_for_normal_device(serial: Option<&str>) -> Result<()> {
-    let start = Instant::now();
-
-    loop {
-        let devices = find_devices_fast().unwrap_or_default();
-        let found = devices
-            .iter()
-            .any(|d| d.mode == DeviceMode::Normal && serial.is_none_or(|s| d.serial == s));
-
-        if found {
-            debug!(
-                "Device re-enumerated in normal mode (serial: {})",
-                serial.unwrap_or("any")
-            );
-            return Ok(());
-        }
-
-        if start.elapsed() > POST_FLASH_TIMEOUT {
-            // Not a hard error — the flash may have succeeded but the device
-            // may take longer to boot or the user may need to power-cycle.
-            warn!(
-                "device did not re-enumerate in normal mode within {:.0}s",
-                POST_FLASH_TIMEOUT.as_secs_f64()
-            );
-            return Ok(());
+        if start.elapsed() > timeout {
+            if hard_error {
+                anyhow::bail!(
+                    "timed out waiting for device to enter {} mode ({:.0}s) — \
+                     device may not have rebooted correctly",
+                    mode_label,
+                    timeout.as_secs_f64()
+                );
+            } else {
+                warn!(
+                    "device did not re-enumerate in {} mode within {:.0}s",
+                    mode_label,
+                    timeout.as_secs_f64()
+                );
+                return Ok(());
+            }
         }
 
         tokio::time::sleep(DFU_POLL_INTERVAL).await;
@@ -308,33 +283,19 @@ async fn wait_for_normal_device(serial: Option<&str>) -> Result<()> {
 
 /// Execute the `dfu` command — flash firmware via DFU.
 pub async fn execute(firmware: &str, device: Option<&str>, json: bool) -> Result<()> {
-    match execute_flash_internal(firmware, device).await {
-        Ok(()) => {
-            if json {
-                let output = json!({
-                    "action": "dfu",
-                    "firmware": firmware,
-                    "message": "Firmware flashed successfully",
-                });
-                println!("{}", json_output::format_success(output));
-            } else {
-                println!("Firmware flashed successfully.");
-            }
-            Ok(())
-        }
-        Err(e) => {
-            if json {
-                let context = json!({
-                    "action": "dfu",
-                    "firmware": firmware,
-                });
-                println!("{}", json_output::format_error(&e, context));
-            } else {
-                eprintln!("Error: {:#}", e);
-            }
-            Err(e)
-        }
+    execute_flash_internal(firmware, device).await?;
+
+    if json {
+        let output = json!({
+            "action": "dfu",
+            "firmware": firmware,
+            "message": "Firmware flashed successfully",
+        });
+        println!("{}", json_output::format_success(output));
+    } else {
+        println!("Firmware flashed successfully.");
     }
+    Ok(())
 }
 
 /// Internal: validate firmware binary, ensure device is in bootloader mode, flash.
@@ -428,7 +389,13 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
 
     eprintln!("Waiting for device to reboot...");
     tokio::time::sleep(POST_REBOOT_DELAY).await;
-    wait_for_normal_device(target_serial.as_deref()).await?;
+    wait_for_device_mode(
+        DeviceMode::Normal,
+        target_serial.as_deref(),
+        POST_FLASH_TIMEOUT,
+        false,
+    )
+    .await?;
 
     Ok(())
 }
@@ -451,7 +418,7 @@ fn open_dfu_by_serial<C: rusb::UsbContext>(
             Err(_) => continue,
         };
 
-        if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
 
@@ -522,7 +489,7 @@ fn reset_dfu_device(serial: Option<&str>) -> Result<()> {
             Err(_) => continue,
         };
 
-        if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
 
@@ -568,7 +535,7 @@ fn wait_for_dfu_device_sync(serial: Option<&str>) -> Result<()> {
                 Err(_) => continue,
             };
 
-            if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+            if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
                 continue;
             }
 

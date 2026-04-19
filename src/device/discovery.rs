@@ -158,23 +158,7 @@ fn detect_device_mode(product: Option<&String>) -> DeviceMode {
 /// For normal-mode devices with an AP protocol port, queries the `device_name`
 /// setting to populate the `product` field.
 pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
-    let ports = serialport::available_ports().map_err(AttentioError::Serial)?;
-
-    debug!("Found {} total serial ports", ports.len());
-    trace!("All ports: {:#?}", ports);
-
-    let mut devices = devices_from_ports(ports);
-
-    // Also check for DFU-only (Bootloader) devices (no serial ports)
-    match find_dfu_only_devices() {
-        Ok(dfu_devices) => {
-            debug!("Found {} DFU-only devices", dfu_devices.len());
-            devices.extend(dfu_devices);
-        }
-        Err(e) => {
-            warn!("Failed to enumerate USB devices for DFU detection: {}", e);
-        }
-    }
+    let mut devices = find_devices_fast()?;
 
     // Query device_name from each normal-mode device via AP protocol.
     for device in &mut devices {
@@ -197,9 +181,6 @@ pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
             }
         }
     }
-
-    // Sort by serial for deterministic output
-    devices.sort_by(|a, b| a.serial.cmp(&b.serial));
 
     Ok(devices)
 }
@@ -239,14 +220,13 @@ pub fn find_devices_fast() -> Result<Vec<AttentioDevice>, AttentioError> {
 ///
 /// Uses libusb to enumerate USB devices and find those with matching VID/PID
 /// that expose a DFU interface but no serial ports.
-fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, String> {
-    let Ok(context) = rusb::Context::new() else {
-        return Err("Failed to create USB context".to_string());
-    };
+fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
+    let context = rusb::Context::new()
+        .map_err(|e| AttentioError::Other(format!("failed to create USB context: {}", e)))?;
 
-    let Ok(devices) = context.devices() else {
-        return Err("Failed to enumerate USB devices".to_string());
-    };
+    let devices = context
+        .devices()
+        .map_err(|e| AttentioError::Other(format!("failed to enumerate USB devices: {}", e)))?;
 
     let mut dfu_devices = Vec::new();
 
@@ -256,7 +236,7 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, String> {
         };
 
         // Check if this is our device
-        if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
 
@@ -326,7 +306,7 @@ fn read_usb_device_info(usb_serial: &str) -> Option<UsbDeviceInfo> {
             Err(_) => continue,
         };
 
-        if desc.vendor_id() != ATTENTIO_VID || desc.product_id() != ATTENTIO_PID {
+        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
 

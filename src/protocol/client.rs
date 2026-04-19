@@ -5,9 +5,11 @@
 
 use std::time::Duration;
 
+use anyhow::{Context, Result};
 use tracing::debug;
 
 use crate::device::connection::DeviceConnection;
+use crate::device::discovery::resolve_device;
 use crate::error::AttentioError;
 
 use super::packet::{
@@ -103,6 +105,27 @@ pub fn effects_submode_name(submode: u8) -> &'static str {
         12 => "Memory",
         _ => "UNKNOWN",
     }
+}
+
+/// Resolve a device and open an AP client connection.
+///
+/// This is the standard pattern used by all command handlers that need to
+/// communicate with a device: resolve by serial/index, find the AP port,
+/// wait for CDC ACM to settle, and open the protocol client.
+pub async fn open_client(device: Option<&str>) -> Result<ApClient> {
+    let dev = resolve_device(device)
+        .await
+        .context("failed to resolve device")?;
+
+    let port_path = dev
+        .ap_port()
+        .ok_or_else(|| anyhow::anyhow!("device '{}' has no protocol port", dev.serial))?
+        .to_string();
+
+    // Brief delay to let CDC ACM link settle after enumeration.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    ApClient::open(&port_path).context(format!("failed to open protocol port {}", port_path))
 }
 
 /// AP protocol client wrapping a serial connection.

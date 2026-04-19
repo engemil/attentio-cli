@@ -15,6 +15,48 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ## [Development] (2026-04-19)
 
+Changed
+
+- **Extracted shared `open_client()` helper** — deduplicated device resolution and AP
+  client creation from 7 command files (`session`, `metadata`, `settings`, `status`,
+  `set`, `power`, `loglevel`) into a single `open_client()` function in
+  `src/protocol/client.rs`, re-exported from `src/protocol/mod.rs`.
+
+- **Unified DFU device wait functions** — replaced separate `wait_for_dfu_device` and
+  `wait_for_normal_device` with a single `wait_for_device_mode()` function in `dfu.rs`.
+
+- **Centralized log level name mapping** — made `level_name()` and `LEVEL_NAMES` public
+  in `loglevel.rs`; `monitor.rs`, `format.rs`, and `ui.rs` now use the shared mapping
+  instead of maintaining their own copies.
+
+- **Extracted `is_attentio_device()` helper** — deduplicated Attentio VID/PID matching
+  from 5 call sites in `dfu.rs` and `discovery.rs` into `config.rs`.
+
+- **Composed `find_devices()` from `find_devices_fast()`** — removed duplicated port
+  enumeration logic; `find_devices` now delegates to `find_devices_fast` and adds
+  metadata enrichment.
+
+- **Fixed `find_dfu_only_devices` error type** — now returns `AttentioError` instead of
+  `String` for consistency with the rest of the error handling.
+
+Fixed
+
+- **Removed double error reporting** in `list.rs` and `dfu.rs` — errors were being
+  printed with `eprintln!` and then propagated with `?`, causing duplicate output.
+  Now uses `?` propagation only.
+
+Removed
+
+- **Dead code cleanup** — removed unnecessary `#[allow(dead_code)]` on event constants
+  in `packet.rs`; removed dead re-exports with `#[allow(unused_imports)]` in
+  `device/mod.rs`.
+
+- **Renamed `json_flag` to `json`** in `version.rs` for consistency with other commands.
+
+---
+
+## [Development] (2026-04-19)
+
 Added
 
 - **Session ID support** — the CLI now parses and displays the session ID assigned by

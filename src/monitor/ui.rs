@@ -188,12 +188,19 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Show current runtime log level
     {
         let (label, color) = match app.log_level {
-            Some(0) => ("Log:NONE ", Color::DarkGray),
-            Some(1) => ("Log:ERROR ", Color::Red),
-            Some(2) => ("Log:WARN ", Color::Yellow),
-            Some(3) => ("Log:INFO ", Color::Green),
-            Some(4) => ("Log:DEBUG ", Color::Magenta),
-            _ => ("Log:? ", Color::DarkGray),
+            Some(level @ 0..=4) => {
+                let name = crate::cli::commands::loglevel::level_name(level);
+                let color = match level {
+                    0 => Color::DarkGray,
+                    1 => Color::Red,
+                    2 => Color::Yellow,
+                    3 => Color::Green,
+                    4 => Color::Magenta,
+                    _ => Color::DarkGray,
+                };
+                (format!("Log:{} ", name), color)
+            }
+            _ => ("Log:? ".to_string(), Color::DarkGray),
         };
         hints.push(Span::styled(
             label,

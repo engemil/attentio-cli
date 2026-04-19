@@ -1,29 +1,16 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use crate::device::discovery::resolve_device;
 use crate::json_output;
 use crate::protocol::client::{
     control_mode_name, effects_submode_name, interface_name, standalone_mode_name,
     system_state_name,
 };
-use crate::protocol::ApClient;
+use crate::protocol::open_client;
 
 /// Execute the `status` command — query device status.
 pub async fn execute(device: Option<&str>, json: bool) -> Result<()> {
-    let dev = resolve_device(device)
-        .await
-        .context("failed to resolve device")?;
-
-    let port_path = dev
-        .ap_port()
-        .ok_or_else(|| anyhow::anyhow!("device '{}' has no protocol port", dev.serial))?
-        .to_string();
-
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut client = ApClient::open(&port_path)
-        .context(format!("failed to open protocol port {}", port_path))?;
+    let mut client = open_client(device).await?;
 
     let status = client
         .get_status()

@@ -18,29 +18,18 @@ pub async fn execute(json: bool) -> Result<()> {
             seconds: LIST_TIMEOUT.as_secs(),
         })?;
 
-    match find_result {
-        Ok(devices) => {
-            if json {
-                print_json(&devices)?;
-            } else {
-                if devices.is_empty() {
-                    println!("No device(s) found.");
-                } else {
-                    print_table(&devices);
-                }
-            }
-            Ok(())
-        }
-        Err(e) => {
-            let err = anyhow::Error::from(e);
-            if json {
-                println!("{}", json_output::format_error(&err, json!({})));
-            } else {
-                eprintln!("Error: {:#}", err);
-            }
-            Err(err)
+    let devices = find_result?;
+
+    if json {
+        print_json(&devices)?;
+    } else {
+        if devices.is_empty() {
+            println!("No device(s) found.");
+        } else {
+            print_table(&devices);
         }
     }
+    Ok(())
 }
 
 fn print_json(devices: &[AttentioDevice]) -> Result<()> {

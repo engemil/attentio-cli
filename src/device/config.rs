@@ -14,3 +14,8 @@ pub const DFU_PRODUCT_PATTERNS: &[&str] = &["Bootloader", "DFU"];
 
 /// Known product strings for devices in normal application mode
 pub const APP_PRODUCT_STRINGS: &[&str] = &["AttentioLight-1", "Attentio"];
+
+/// Check if a USB device descriptor matches the Attentio VID/PID.
+pub fn is_attentio_device(vendor_id: u16, product_id: u16) -> bool {
+    vendor_id == ATTENTIO_VID && product_id == ATTENTIO_PID
+}

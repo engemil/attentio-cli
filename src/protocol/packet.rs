@@ -50,12 +50,9 @@ pub const CMD_LOG_SET_LEVEL: u8 = 0x61;
 // DFU (0x70-0x7F)
 pub const CMD_DFU_ENTER: u8 = 0x70;
 
-// Events (0x80-0x8F) — Device -> Host (used by future `monitor` command)
-#[allow(dead_code)]
+// Events (0x80-0x8F) — Device -> Host (used by monitor)
 pub const CMD_EVT_BUTTON: u8 = 0x80;
-#[allow(dead_code)]
 pub const CMD_EVT_STATE_CHANGE: u8 = 0x81;
-#[allow(dead_code)]
 pub const CMD_EVT_SESSION_END: u8 = 0x82;
 
 /// Response OK — returned by the device on success.

@@ -106,14 +106,7 @@ fn format_cmd_payload(cmd: u8, payload: &[u8]) -> String {
             format!("[{}%]", payload[0])
         }
         CMD_LOG_SET_LEVEL if !payload.is_empty() => {
-            let name = match payload[0] {
-                0 => "NONE",
-                1 => "ERROR",
-                2 => "WARN",
-                3 => "INFO",
-                4 => "DEBUG",
-                _ => "?",
-            };
+            let name = crate::cli::commands::loglevel::level_name(payload[0]);
             format!("[{} ({})]", payload[0], name)
         }
         _ if !payload.is_empty() => format!("[{}]", format_hex(payload)),

@@ -6,95 +6,171 @@ use ratatui::{
     Frame,
 };
 
-use super::app::App;
+use super::app::{App, Pane};
 
 /// Render the TUI to the terminal frame.
-/// Full-height debug pane with a status bar at the bottom.
+/// Two-pane layout: AP protocol traffic (top), serial prints (bottom),
+/// plus a status bar.
 pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Percentage(35), // AP protocol pane (top)
+            Constraint::Min(5),         // Serial prints pane (bottom)
+            Constraint::Length(1),      // Status bar
+        ])
         .split(frame.area());
 
-    render_debug_pane(frame, app, chunks[0]);
-    render_status_bar(frame, app, chunks[1]);
+    render_ap_pane(frame, app, chunks[0]);
+    render_serial_pane(frame, app, chunks[1]);
+    render_status_bar(frame, app, chunks[2]);
 }
 
-/// Render the serial prints pane (CDC0).
-fn render_debug_pane(frame: &mut Frame, app: &App, area: Rect) {
-    let border_style = Style::default().fg(Color::Cyan);
+/// Render the AP protocol traffic pane (CDC1) — top pane.
+fn render_ap_pane(frame: &mut Frame, app: &App, area: Rect) {
+    let focused = app.active_pane == Pane::Protocol;
+    let border_color = if focused {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
 
     let title = match (
-        &app.debug_port_path,
-        app.debug_connected,
-        app.debug_reconnecting,
-        app.debug_port_busy,
+        &app.ap_port_path,
+        app.ap_connected,
+        app.ap_reconnecting,
+        app.ap_port_busy,
     ) {
-        (Some(path), true, _, _) => format!(" Serial Prints (CDC0) \u{2014} {} ", path),
+        (Some(path), true, _, _) => format!(" AP Protocol (CDC1) — {} ", path),
         (Some(path), false, _, true) => {
-            format!(" Serial Prints (CDC0) \u{2014} {} (PORT BUSY) ", path)
+            format!(" AP Protocol (CDC1) — {} (PORT BUSY) ", path)
         }
         (Some(path), false, true, _) => {
-            format!(" Serial Prints (CDC0) \u{2014} {} (reconnecting...) ", path)
+            format!(" AP Protocol (CDC1) — {} (reconnecting...) ", path)
         }
         (Some(path), false, false, false) => {
-            format!(" Serial Prints (CDC0) \u{2014} {} (not connected) ", path)
+            format!(" AP Protocol (CDC1) — {} (not connected) ", path)
         }
-        (None, _, _, _) => " Serial Prints (CDC0) \u{2014} (not connected) ".to_string(),
+        (None, _, _, _) => " AP Protocol (CDC1) — (no port) ".to_string(),
     };
 
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(border_style);
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if !app.debug_connected {
-        // Show centered status message
-        let (text, color) = if app.debug_port_busy {
-            ("(port busy \u{2014} close other process)", Color::Red)
-        } else if app.debug_reconnecting {
+    if !app.ap_connected && app.ap_port_path.is_some() {
+        let (text, color) = if app.ap_port_busy {
+            ("(port busy — close other process)", Color::Red)
+        } else if app.ap_reconnecting {
             ("(reconnecting...)", Color::Yellow)
         } else {
             ("(not connected)", Color::DarkGray)
         };
         let msg = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
             .alignment(Alignment::Center);
-        // Center vertically
         let y_offset = inner.height / 2;
         let centered = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
         frame.render_widget(msg, centered);
         return;
     }
 
-    // Calculate visible lines with scroll offset
-    let visible_height = inner.height as usize;
-    let total_lines = app.debug_lines.len();
+    if app.ap_lines.is_empty() {
+        let msg = Paragraph::new(Line::from(Span::styled(
+            "(waiting for AP traffic...)",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(Alignment::Center);
+        let y_offset = inner.height / 2;
+        let centered = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
+        frame.render_widget(msg, centered);
+        return;
+    }
 
-    let lines = build_scrolled_lines(&app.debug_lines, app.debug_scroll, visible_height);
+    render_scrolled_content(frame, &app.ap_lines, app.ap_scroll, inner);
+}
 
-    // Show scroll indicator if not at bottom
-    let paragraph = if app.debug_scroll > 0 {
-        let scroll_indicator = format!(
-            " \u{2191} {} more below ",
-            app.debug_scroll.min(total_lines)
-        );
-        let mut display_lines = lines;
-        if !display_lines.is_empty() {
-            let last_idx = display_lines.len() - 1;
-            display_lines[last_idx] = Line::from(Span::styled(
+/// Render the serial prints pane (CDC0) — bottom pane.
+fn render_serial_pane(frame: &mut Frame, app: &App, area: Rect) {
+    let focused = app.active_pane == Pane::Serial;
+    let border_color = if focused {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+
+    let title = match (
+        &app.serial_port_path,
+        app.serial_connected,
+        app.serial_reconnecting,
+        app.serial_port_busy,
+    ) {
+        (Some(path), true, _, _) => format!(" Serial Prints (CDC0) — {} ", path),
+        (Some(path), false, _, true) => {
+            format!(" Serial Prints (CDC0) — {} (PORT BUSY) ", path)
+        }
+        (Some(path), false, true, _) => {
+            format!(" Serial Prints (CDC0) — {} (reconnecting...) ", path)
+        }
+        (Some(path), false, false, false) => {
+            format!(" Serial Prints (CDC0) — {} (not connected) ", path)
+        }
+        (None, _, _, _) => " Serial Prints (CDC0) — (not connected) ".to_string(),
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if !app.serial_connected {
+        let (text, color) = if app.serial_port_busy {
+            ("(port busy — close other process)", Color::Red)
+        } else if app.serial_reconnecting {
+            ("(reconnecting...)", Color::Yellow)
+        } else {
+            ("(not connected)", Color::DarkGray)
+        };
+        let msg = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
+            .alignment(Alignment::Center);
+        let y_offset = inner.height / 2;
+        let centered = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
+        frame.render_widget(msg, centered);
+        return;
+    }
+
+    render_scrolled_content(frame, &app.serial_lines, app.serial_scroll, inner);
+}
+
+/// Render a scrollable text buffer into a given area.
+fn render_scrolled_content(frame: &mut Frame, lines: &[String], scroll_offset: usize, area: Rect) {
+    let visible_height = area.height as usize;
+    let total = lines.len();
+
+    let display_lines = build_scrolled_lines(lines, scroll_offset, visible_height);
+
+    let paragraph = if scroll_offset > 0 {
+        let scroll_indicator = format!(" ↑ {} more below ", scroll_offset.min(total));
+        let mut display = display_lines;
+        if !display.is_empty() {
+            let last_idx = display.len() - 1;
+            display[last_idx] = Line::from(Span::styled(
                 scroll_indicator,
                 Style::default().fg(Color::Yellow),
             ));
         }
-        Paragraph::new(display_lines).wrap(Wrap { trim: false })
+        Paragraph::new(display).wrap(Wrap { trim: false })
     } else {
-        Paragraph::new(lines).wrap(Wrap { trim: false })
+        Paragraph::new(display_lines).wrap(Wrap { trim: false })
     };
 
-    frame.render_widget(paragraph, inner);
+    frame.render_widget(paragraph, area);
 }
 
 /// Render the bottom status bar with device info and key hints.
@@ -125,7 +201,21 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
+    // Show active pane indicator
+    let pane_label = match app.active_pane {
+        Pane::Protocol => "Focus:AP ",
+        Pane::Serial => "Focus:SER ",
+    };
+    hints.push(Span::styled(
+        pane_label,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    ));
+
     hints.extend([
+        Span::styled("Tab", Style::default().fg(Color::DarkGray)),
+        Span::styled("=pane ", Style::default().fg(Color::DarkGray)),
         Span::styled("1-4", Style::default().fg(Color::DarkGray)),
         Span::styled("=loglevel ", Style::default().fg(Color::DarkGray)),
         Span::styled("| PgUp/PgDn", Style::default().fg(Color::DarkGray)),
@@ -154,8 +244,6 @@ fn build_scrolled_lines<'a>(
         return Vec::new();
     }
 
-    // Calculate the range of lines to show
-    // end is exclusive, and represents the last line we'd show at the bottom
     let end = total.saturating_sub(scroll_offset);
     let start = end.saturating_sub(visible_height);
 

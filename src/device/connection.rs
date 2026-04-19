@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use crate::error::AttentioError;
 
-/// Default timeout for `read_line()` (used by the debug reader stream).
+/// Default timeout for `read_line()` (used by the serial reader stream).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// An async connection to a device over a serial port.

@@ -16,6 +16,10 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> Action {
             app.running = false;
             Action::Quit
         }
+        KeyCode::Tab => {
+            app.toggle_pane();
+            Action::None
+        }
         KeyCode::PageUp => {
             app.scroll_up(PAGE_SCROLL);
             Action::None

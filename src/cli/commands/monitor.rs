@@ -19,158 +19,188 @@ use crate::device::connection::DeviceConnection;
 use crate::device::discovery::resolve_device;
 use crate::error::AttentioError;
 use crate::monitor::app::{Action, App};
+use crate::monitor::format;
 use crate::monitor::{event as monitor_event, ui};
-use crate::protocol::ApClient;
+use crate::protocol::packet::{build_packet, ApParser, CMD_LOG_GET_LEVEL, CMD_LOG_SET_LEVEL};
 
 /// Interval between reconnection attempts for disconnected ports.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Messages sent from background reader tasks to the main event loop.
 enum ReaderMsg {
+    // ── CDC0 (serial prints) ─────────────────────────────────────────────
     /// A line received from the serial prints port (CDC0).
-    DebugLine(String),
-    /// The debug port reader encountered an unrecoverable error.
-    DebugError(String),
-    /// The debug port is busy — another process has it open.
-    DebugPortBusy(String),
-    /// The debug port was successfully reconnected.
-    DebugReconnected,
+    SerialLine(String),
+    /// The serial port reader encountered an unrecoverable error.
+    SerialError(String),
+    /// The serial port is busy — another process has it open.
+    SerialPortBusy(String),
+    /// The serial port was successfully reconnected.
+    SerialReconnected,
+
+    // ── CDC1 (AP protocol) ───────────────────────────────────────────────
+    /// A formatted AP traffic line to display (incoming response/event).
+    ApLine(String),
+    /// The AP port reader encountered an unrecoverable error.
+    ApError(String),
+    /// The AP port is busy.
+    ApPortBusy(String),
+    /// The AP port was successfully (re)connected.
+    ApConnected,
 }
 
 /// Restore the terminal to its normal state.
-/// Called on both clean exit and error paths.
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = io::stdout().execute(LeaveAlternateScreen);
 }
 
-/// Execute the `monitor` command — monitor dashboard with CDC debug view.
+/// Execute the `monitor` command — two-pane monitor dashboard.
 ///
-/// Shows a single full-height pane for serial prints (CDC0). If the port
-/// fails to open, a background task retries every few seconds until it
-/// becomes available.
+/// Top pane: AP protocol traffic (CDC1) — commands, responses, events.
+/// Bottom pane: serial prints (CDC0).
 pub async fn execute(device: Option<&str>) -> Result<()> {
-    // Resolve which device to talk to
     let dev = resolve_device(device)
         .await
         .context("failed to resolve device")?;
 
-    let debug_port_path = dev.debug_port().map(|s| s.to_string());
+    let serial_port_path = dev.serial_port().map(|s| s.to_string());
     let ap_port_path = dev.ap_port().map(|s| s.to_string());
 
     info!(
-        "Starting monitor for {} — debug: {}",
+        "Starting monitor for {} — serial: {}, ap: {}",
         dev.serial,
-        debug_port_path.as_deref().unwrap_or("none"),
+        serial_port_path.as_deref().unwrap_or("none"),
+        ap_port_path.as_deref().unwrap_or("none"),
     );
 
-    // Channel for background reader tasks to send messages to the main loop
     let (tx, mut rx) = mpsc::channel::<ReaderMsg>(256);
 
-    // Track spawned tasks so we can abort them on exit
+    // Channel for sending AP commands from the main loop to the AP writer task.
+    let (ap_cmd_tx, ap_cmd_rx) = mpsc::channel::<Vec<u8>>(16);
+
     let mut task_handles: Vec<JoinHandle<()>> = Vec::new();
 
     // --- Try to open CDC0 (serial prints) ---
-    let mut debug_connected = false;
-    let mut debug_reconnecting = false;
-    let mut debug_port_busy = false;
-    if let Some(ref path) = debug_port_path {
+    let mut serial_connected = false;
+    let mut serial_reconnecting = false;
+    let mut serial_port_busy = false;
+    if let Some(ref path) = serial_port_path {
         match DeviceConnection::open(path) {
             Ok(conn) => {
                 let conn = conn.with_timeout(Duration::from_millis(500));
-                debug_connected = true;
-                info!("Debug port opened: {}", path);
-
-                let tx_debug = tx.clone();
+                serial_connected = true;
+                info!("Serial port opened: {}", path);
+                let tx_serial = tx.clone();
                 let handle = tokio::spawn(async move {
-                    debug_reader_task(conn, tx_debug).await;
+                    serial_reader_task(conn, tx_serial).await;
                 });
                 task_handles.push(handle);
             }
             Err(e) if e.is_port_busy() => {
                 warn!("{}", e);
-                debug_port_busy = true;
-                // Start reconnect task — port may become available later
+                serial_port_busy = true;
                 let tx_reconnect = tx.clone();
                 let path_clone = path.clone();
                 let handle = tokio::spawn(async move {
-                    debug_reconnect_task(path_clone, tx_reconnect).await;
+                    serial_reconnect_task(path_clone, tx_reconnect).await;
                 });
                 task_handles.push(handle);
             }
             Err(e) => {
-                warn!("Failed to open debug port {}: {}", path, e);
-                // Start reconnect task in background
-                debug_reconnecting = true;
+                warn!("Failed to open serial port {}: {}", path, e);
+                serial_reconnecting = true;
                 let tx_reconnect = tx.clone();
                 let path_clone = path.clone();
                 let handle = tokio::spawn(async move {
-                    debug_reconnect_task(path_clone, tx_reconnect).await;
+                    serial_reconnect_task(path_clone, tx_reconnect).await;
                 });
                 task_handles.push(handle);
             }
         }
     }
 
-    // Create app state with connection status
+    // --- Try to open CDC1 (AP protocol) ---
+    let mut ap_connected = false;
+    let mut ap_reconnecting = false;
+    let mut ap_port_busy = false;
+    if let Some(ref path) = ap_port_path {
+        match DeviceConnection::open(path) {
+            Ok(conn) => {
+                let conn = conn.with_timeout(Duration::from_millis(100));
+                ap_connected = true;
+                info!("AP port opened: {}", path);
+                let tx_ap = tx.clone();
+                let handle = tokio::spawn(async move {
+                    ap_reader_writer_task(conn, tx_ap, ap_cmd_rx).await;
+                });
+                task_handles.push(handle);
+            }
+            Err(e) if e.is_port_busy() => {
+                warn!("{}", e);
+                ap_port_busy = true;
+                let tx_reconnect = tx.clone();
+                let path_clone = path.clone();
+                let handle = tokio::spawn(async move {
+                    ap_reconnect_task(path_clone, tx_reconnect, ap_cmd_rx).await;
+                });
+                task_handles.push(handle);
+            }
+            Err(e) => {
+                warn!("Failed to open AP port {}: {}", path, e);
+                ap_reconnecting = true;
+                let tx_reconnect = tx.clone();
+                let path_clone = path.clone();
+                let handle = tokio::spawn(async move {
+                    ap_reconnect_task(path_clone, tx_reconnect, ap_cmd_rx).await;
+                });
+                task_handles.push(handle);
+            }
+        }
+    }
+
+    // Create app state
     let mut app = App::new(
         dev.serial.clone(),
-        debug_port_path,
-        debug_connected,
+        serial_port_path,
+        serial_connected,
         ap_port_path,
     );
-    app.debug_reconnecting = debug_reconnecting;
-    app.debug_port_busy = debug_port_busy;
+    app.serial_reconnecting = serial_reconnecting;
+    app.serial_port_busy = serial_port_busy;
+    app.ap_connected = ap_connected;
+    app.ap_reconnecting = ap_reconnecting;
+    app.ap_port_busy = ap_port_busy;
 
-    // Try to query the initial runtime log level
-    if let Some(ref path) = app.ap_port_path {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        match ApClient::open(path) {
-            Ok(mut client) => match client.log_get_level().await {
-                Ok(level) => {
-                    app.log_level = Some(level);
-                }
-                Err(e) => {
-                    debug!("Could not query initial log level: {}", e);
-                }
-            },
-            Err(e) => {
-                debug!("Could not open AP port for log level query: {}", e);
-            }
-        }
+    // Query initial log level via the shared AP connection
+    if ap_connected {
+        let pkt = build_packet(CMD_LOG_GET_LEVEL, &[]);
+        let _ = ap_cmd_tx.send(pkt).await;
     }
 
-    // Channel for terminal events (polled from a blocking thread)
+    // Terminal event polling
     let (term_tx, mut term_rx) = mpsc::channel::<Event>(64);
-
-    // Shared shutdown flag — signals the polling thread to exit
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_flag = shutdown.clone();
 
-    // Spawn a blocking thread to poll crossterm events.
-    // This works reliably across containers, SSH, and all terminal types.
     let term_handle = tokio::task::spawn_blocking(move || {
         while !shutdown_flag.load(Ordering::Relaxed) {
-            // Poll with 50ms timeout — short enough to check shutdown promptly
             match event::poll(Duration::from_millis(50)) {
                 Ok(true) => match event::read() {
                     Ok(evt) => {
                         if term_tx.blocking_send(evt).is_err() {
-                            // Receiver dropped — main loop exited
                             break;
                         }
                     }
                     Err(_) => break,
                 },
-                Ok(false) => continue, // No event within timeout, poll again
-                Err(_) => break,       // Terminal error
+                Ok(false) => continue,
+                Err(_) => break,
             }
         }
     });
 
-    // Enter monitor mode and run the event loop.
-    // Wrapped so that cleanup (task abort, terminal restore) always runs,
-    // even if enable_raw_mode() or EnterAlternateScreen fails.
+    // Enter monitor mode
     let result = async {
         enable_raw_mode().context("failed to enable raw mode")?;
         io::stdout()
@@ -182,19 +212,16 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
             &mut rx,
             &mut term_rx,
             tx.clone(),
+            &ap_cmd_tx,
             &mut task_handles,
         )
         .await
     }
     .await;
 
-    // Always clean up: signal the terminal polling thread to stop, abort async tasks.
-    // This runs whether the monitor launched successfully or failed at setup.
+    // Cleanup
     shutdown.store(true, Ordering::Relaxed);
 
-    // Abort all async tasks first so they begin cancellation immediately,
-    // then await them all concurrently within a single timeout. This avoids
-    // stacking per-task timeouts when many reconnect tasks have accumulated.
     for handle in &task_handles {
         handle.abort();
     }
@@ -205,42 +232,40 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     })
     .await;
 
-    // Wait briefly for the polling thread to notice the shutdown flag
     let _ = tokio::time::timeout(Duration::from_millis(100), term_handle).await;
 
-    // Restore terminal — always, regardless of success or failure
     restore_terminal();
-
     eprintln!("Monitor session ended.");
 
     result
 }
 
-/// The main event loop. Separated so we can guarantee terminal restore via the caller.
+/// The main event loop.
 async fn run_event_loop(
     app: &mut App,
     rx: &mut mpsc::Receiver<ReaderMsg>,
     term_rx: &mut mpsc::Receiver<Event>,
     reader_tx: mpsc::Sender<ReaderMsg>,
+    ap_cmd_tx: &mpsc::Sender<Vec<u8>>,
     task_handles: &mut Vec<JoinHandle<()>>,
 ) -> Result<()> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
 
-    // Add initial status messages
-    if app.debug_connected {
-        app.push_debug_line("Listening for serial prints...".to_string());
+    if app.serial_connected {
+        app.push_serial_line("Listening for serial prints...".to_string());
+    }
+    if app.ap_connected {
+        app.push_ap_line("Listening for AP traffic...".to_string());
     }
 
-    app.push_debug_line("Press Esc or Ctrl+C to quit.".to_string());
-    app.push_debug_line(String::new());
+    app.push_serial_line("Press Esc or Ctrl+C to quit. Tab to switch panes.".to_string());
+    app.push_serial_line(String::new());
 
-    // Initial render
     terminal.draw(|frame| ui::render(frame, app))?;
 
     while app.running {
         let needs_render = tokio::select! {
-            // Terminal events from the blocking poller thread
             maybe_event = term_rx.recv() => {
                 match maybe_event {
                     Some(Event::Key(key)) => {
@@ -249,40 +274,7 @@ async fn run_event_loop(
                             match action {
                                 Action::Quit => break,
                                 Action::SetLogLevel(level) => {
-                                    // Send LOG_SET_LEVEL via AP port
-                                    if let Some(ref path) = app.ap_port_path {
-                                        match ApClient::open(path) {
-                                            Ok(mut client) => {
-                                                match client.log_set_level(level).await {
-                                                    Ok(()) => {
-                                                        app.log_level = Some(level);
-                                                        let name = match level {
-                                                            0 => "NONE", 1 => "ERROR",
-                                                            2 => "WARN", 3 => "INFO",
-                                                            4 => "DEBUG", _ => "?",
-                                                        };
-                                                        app.push_debug_line(format!(
-                                                            "[Log level set to {} ({})]", level, name
-                                                        ));
-                                                    }
-                                                    Err(e) => {
-                                                        app.push_debug_line(format!(
-                                                            "[Failed to set log level: {}]", e
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                app.push_debug_line(format!(
-                                                    "[Failed to open AP port: {}]", e
-                                                ));
-                                            }
-                                        }
-                                    } else {
-                                        app.push_debug_line(
-                                            "[No AP port available for log level control]".to_string()
-                                        );
-                                    }
+                                    handle_set_log_level(app, ap_cmd_tx, level).await;
                                 }
                                 Action::None => {}
                             }
@@ -292,44 +284,67 @@ async fn run_event_loop(
                         }
                     }
                     Some(Event::Resize(_, _)) => true,
-                    Some(_) => false, // Mouse events, etc.
-                    None => break,    // Poller thread exited
+                    Some(_) => false,
+                    None => break,
                 }
             }
 
-            // Messages from background CDC reader tasks
             Some(msg) = rx.recv() => {
                 match msg {
-                    ReaderMsg::DebugLine(line) => {
-                        app.push_debug_line(line);
+                    // ── CDC0 messages ────────────────────────────────
+                    ReaderMsg::SerialLine(line) => {
+                        app.push_serial_line(line);
                     }
-                    ReaderMsg::DebugError(err) => {
-                        app.push_debug_line(format!("[ERROR: {}]", err));
-                        app.debug_connected = false;
-
-                        // Start reconnection if we have a port path
-                        let path_clone = app.debug_port_path.clone();
+                    ReaderMsg::SerialError(err) => {
+                        app.push_serial_line(format!("[ERROR: {}]", err));
+                        app.serial_connected = false;
+                        let path_clone = app.serial_port_path.clone();
                         if let Some(path) = path_clone {
-                            app.debug_reconnecting = true;
-                            app.push_debug_line("Attempting to reconnect...".to_string());
+                            app.serial_reconnecting = true;
+                            app.push_serial_line("Attempting to reconnect...".to_string());
                             let tx_reconnect = reader_tx.clone();
                             let handle = tokio::spawn(async move {
-                                debug_reconnect_task(path, tx_reconnect).await;
+                                serial_reconnect_task(path, tx_reconnect).await;
                             });
                             task_handles.push(handle);
                         }
                     }
-                    ReaderMsg::DebugReconnected => {
-                        app.debug_connected = true;
-                        app.debug_reconnecting = false;
-                        app.debug_port_busy = false;
-                        app.push_debug_line("Reconnected. Listening for serial prints...".to_string());
-                        info!("Debug port reconnected");
+                    ReaderMsg::SerialReconnected => {
+                        app.serial_connected = true;
+                        app.serial_reconnecting = false;
+                        app.serial_port_busy = false;
+                        app.push_serial_line("Reconnected. Listening for serial prints...".to_string());
                     }
-                    ReaderMsg::DebugPortBusy(msg) => {
-                        app.push_debug_line(format!("[{}]", msg));
-                        app.debug_reconnecting = false;
-                        app.debug_port_busy = true;
+                    ReaderMsg::SerialPortBusy(msg) => {
+                        app.push_serial_line(format!("[{}]", msg));
+                        app.serial_reconnecting = false;
+                        app.serial_port_busy = true;
+                    }
+
+                    // ── CDC1 messages ────────────────────────────────
+                    ReaderMsg::ApLine(line) => {
+                        // Check if this is a LOG_GET_LEVEL response to update the status bar
+                        parse_log_level_from_line(&line, app);
+                        app.push_ap_line(line);
+                    }
+                    ReaderMsg::ApError(err) => {
+                        app.push_ap_line(format!("[ERROR: {}]", err));
+                        app.ap_connected = false;
+                        app.ap_reconnecting = true;
+                    }
+                    ReaderMsg::ApPortBusy(msg) => {
+                        app.push_ap_line(format!("[{}]", msg));
+                        app.ap_reconnecting = false;
+                        app.ap_port_busy = true;
+                    }
+                    ReaderMsg::ApConnected => {
+                        app.ap_connected = true;
+                        app.ap_reconnecting = false;
+                        app.ap_port_busy = false;
+                        app.push_ap_line("Connected. Listening for AP traffic...".to_string());
+                        // Query log level now that we're connected
+                        let pkt = build_packet(CMD_LOG_GET_LEVEL, &[]);
+                        let _ = ap_cmd_tx.send(pkt).await;
                     }
                 }
                 true
@@ -344,65 +359,172 @@ async fn run_event_loop(
     Ok(())
 }
 
-/// Background task that continuously reads lines from the debug port (CDC0)
-/// and sends them to the main loop via the channel.
-async fn debug_reader_task(mut conn: DeviceConnection, tx: mpsc::Sender<ReaderMsg>) {
+/// Handle log level set command via the unified AP connection.
+async fn handle_set_log_level(app: &mut App, ap_cmd_tx: &mpsc::Sender<Vec<u8>>, level: u8) {
+    if !app.ap_connected {
+        app.push_ap_line("[No AP connection for log level control]".to_string());
+        return;
+    }
+
+    let pkt = build_packet(CMD_LOG_SET_LEVEL, &[level]);
+    if ap_cmd_tx.send(pkt).await.is_err() {
+        app.push_ap_line("[Failed to send log level command]".to_string());
+        return;
+    }
+
+    // Optimistically update — the response will confirm in the AP pane.
+    // The outgoing command is displayed by ap_reader_writer_task when it
+    // dequeues the packet, so we don't push an AP line here.
+    app.log_level = Some(level);
+    let name = match level {
+        0 => "NONE",
+        1 => "ERROR",
+        2 => "WARN",
+        3 => "INFO",
+        4 => "DEBUG",
+        _ => "?",
+    };
+    app.push_serial_line(format!("[Log level set to {} ({})]", level, name));
+}
+
+/// Try to extract log level from a LOG_GET_LEVEL OK response line.
+fn parse_log_level_from_line(line: &str, app: &mut App) {
+    if line.starts_with("← OK [") && line.len() >= 8 {
+        let hex_part = line.trim_start_matches("← OK [").trim_end_matches(']');
+        if hex_part.len() == 2 {
+            if let Ok(level) = u8::from_str_radix(hex_part, 16) {
+                if level <= 4 {
+                    app.log_level = Some(level);
+                }
+            }
+        }
+    }
+}
+
+// ── Background tasks ─────────────────────────────────────────────────────────
+
+/// Background task: continuously reads lines from the serial port (CDC0).
+async fn serial_reader_task(mut conn: DeviceConnection, tx: mpsc::Sender<ReaderMsg>) {
     loop {
         match conn.read_line().await {
             Ok(line) => {
-                if tx.send(ReaderMsg::DebugLine(line)).await.is_err() {
-                    // Main loop has exited
+                if tx.send(ReaderMsg::SerialLine(line)).await.is_err() {
                     break;
                 }
             }
-            Err(AttentioError::Timeout { .. }) => {
-                // No data within timeout — this is normal for sporadic serial prints.
-                // Just continue polling.
-                continue;
-            }
+            Err(AttentioError::Timeout { .. }) => continue,
             Err(e) => {
-                let _ = tx.send(ReaderMsg::DebugError(e.to_string())).await;
+                let _ = tx.send(ReaderMsg::SerialError(e.to_string())).await;
                 break;
             }
         }
     }
-    debug!("Debug reader task exiting");
+    debug!("Serial reader task exiting");
 }
 
-/// Background task that periodically attempts to reconnect the debug port (CDC0).
-///
-/// On success, spawns a new `debug_reader_task` and notifies the main loop.
-/// If the port is busy (held by another process), notifies the main loop so the
-/// monitor can display the busy status, then keeps retrying in case the port is
-/// released.
-async fn debug_reconnect_task(port_path: String, tx: mpsc::Sender<ReaderMsg>) {
+/// Background task: reconnects the serial port (CDC0).
+async fn serial_reconnect_task(port_path: String, tx: mpsc::Sender<ReaderMsg>) {
     loop {
         tokio::time::sleep(RECONNECT_INTERVAL).await;
-
         match DeviceConnection::open(&port_path) {
             Ok(conn) => {
                 let conn = conn.with_timeout(Duration::from_millis(500));
-                info!("Debug port reconnected: {}", port_path);
-
-                // Notify the main loop before spawning the reader.
-                // If the main loop is gone, just exit.
-                if tx.send(ReaderMsg::DebugReconnected).await.is_err() {
+                if tx.send(ReaderMsg::SerialReconnected).await.is_err() {
                     return;
                 }
-
-                // Spawn the reader task in-line (it takes over this task's role)
-                debug_reader_task(conn, tx).await;
+                serial_reader_task(conn, tx).await;
                 return;
             }
             Err(e) if e.is_port_busy() => {
-                // Port is held by another process — notify monitor and keep retrying.
-                let _ = tx.send(ReaderMsg::DebugPortBusy(e.to_string())).await;
-                continue;
+                let _ = tx.send(ReaderMsg::SerialPortBusy(e.to_string())).await;
             }
-            Err(_) => {
-                // Port still unavailable — silently retry
-                continue;
+            Err(_) => {}
+        }
+    }
+}
+
+/// Background task: reads AP responses/events from CDC1 and sends outgoing
+/// commands from the command channel.
+///
+/// This task owns the DeviceConnection for CDC1 and multiplexes reads and
+/// writes. Incoming AP packets are parsed and formatted, then sent as ApLine
+/// messages. Outgoing commands from the main loop (e.g., log level changes)
+/// are written to the port, and their formatted representation is also sent
+/// as ApLine messages.
+async fn ap_reader_writer_task(
+    mut conn: DeviceConnection,
+    tx: mpsc::Sender<ReaderMsg>,
+    mut cmd_rx: mpsc::Receiver<Vec<u8>>,
+) {
+    let mut parser = ApParser::new();
+    let mut buf = [0u8; 256];
+
+    loop {
+        tokio::select! {
+            // Read incoming bytes from the device
+            result = conn.read_raw(&mut buf) => {
+                match result {
+                    Ok(0) => {
+                        let _ = tx.send(ReaderMsg::ApError("AP connection closed".to_string())).await;
+                        break;
+                    }
+                    Ok(n) => {
+                        for &byte in &buf[..n] {
+                            if let Some(resp) = parser.feed(byte) {
+                                let line = format::format_incoming(&resp);
+                                if tx.send(ReaderMsg::ApLine(line)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(AttentioError::Timeout { .. }) => continue,
+                    Err(e) => {
+                        let _ = tx.send(ReaderMsg::ApError(e.to_string())).await;
+                        break;
+                    }
+                }
             }
+
+            // Send outgoing commands
+            Some(pkt) = cmd_rx.recv() => {
+                // Format the outgoing command for display (extract cmd and payload from packet)
+                if pkt.len() >= 4 {
+                    let cmd = pkt[2];
+                    let payload = if pkt.len() > 4 { &pkt[3..pkt.len()-1] } else { &[] };
+                    let line = format::format_outgoing(cmd, payload);
+                    let _ = tx.send(ReaderMsg::ApLine(line)).await;
+                }
+                if let Err(e) = conn.write_raw(&pkt).await {
+                    let _ = tx.send(ReaderMsg::ApLine(format!("[Write error: {}]", e))).await;
+                }
+            }
+        }
+    }
+    debug!("AP reader/writer task exiting");
+}
+
+/// Background task: reconnects CDC1 AP port.
+async fn ap_reconnect_task(
+    port_path: String,
+    tx: mpsc::Sender<ReaderMsg>,
+    cmd_rx: mpsc::Receiver<Vec<u8>>,
+) {
+    loop {
+        tokio::time::sleep(RECONNECT_INTERVAL).await;
+        match DeviceConnection::open(&port_path) {
+            Ok(conn) => {
+                let conn = conn.with_timeout(Duration::from_millis(100));
+                if tx.send(ReaderMsg::ApConnected).await.is_err() {
+                    return;
+                }
+                ap_reader_writer_task(conn, tx, cmd_rx).await;
+                return;
+            }
+            Err(e) if e.is_port_busy() => {
+                let _ = tx.send(ReaderMsg::ApPortBusy(e.to_string())).await;
+            }
+            Err(_) => {}
         }
     }
 }

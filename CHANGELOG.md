@@ -13,6 +13,44 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-04-19)
+
+Added
+
+- **Two-pane monitor layout** — `attentio monitor` now shows two panes:
+  - **Top pane:** AP protocol traffic (CDC1) — incoming responses (`← OK`, `← ERROR`),
+    device events (`← EVT_BUTTON SHORT_PRESS`, `← EVT_SESSION_END RELEASED`), and
+    outgoing commands (`→ LOG_SET_LEVEL [3 (INFO)]`). Bidirectional: commands sent from
+    other terminal sessions are also captured.
+  - **Bottom pane:** serial prints (CDC0) — unchanged from before.
+  - **Tab** to switch focused pane; scroll keys apply to the focused pane.
+  - Status bar shows `Focus:AP` / `Focus:SER` indicator.
+
+- **Persistent CDC1 reader** — the monitor now maintains a persistent connection to the
+  AP port (CDC1) with a background reader/writer task. Incoming AP packets are parsed
+  via `ApParser` and formatted for display. The connection supports auto-reconnect and
+  port-busy detection, matching the existing CDC0 behavior.
+
+- **Unified AP connection for log-level hotkeys** — pressing 1-4 to change log level
+  now sends commands through the persistent CDC1 connection (via an async channel) instead
+  of opening a one-shot connection each time. Both the outgoing command and the device
+  response appear in the AP pane.
+
+- **AP packet formatting module (`src/monitor/format.rs`)** — human-readable formatting
+  for all AP protocol traffic: command names, RGB/HSV/brightness payloads, button event
+  types, session end reasons, and error codes.
+
+Changed
+
+- **Renamed "debug" to "serial" throughout CDC0 code** — all internal identifiers, enum
+  variants, function names, and comments referring to CDC0 as "debug" now use "serial"
+  instead: `DebugPrints` → `SerialPrints`, `debug_port()` → `serial_port()`,
+  `debug_connected` → `serial_connected`, `push_debug_line` → `push_serial_line`,
+  `Pane::Debug` → `Pane::Serial`, `debug_reader_task` → `serial_reader_task`, etc.
+  The `list` command port role label changes from `[debug]` to `[serial]`.
+
+---
+
 ## [Development] (2026-04-17)
 
 Added

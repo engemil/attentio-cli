@@ -36,7 +36,7 @@ impl std::fmt::Display for DeviceMode {
 #[serde(rename_all = "snake_case")]
 pub enum CdcRole {
     /// Serial print stream (read-only).
-    DebugPrints,
+    SerialPrints,
     /// Attentio Protocol (AP) interface.
     Protocol,
     /// Single CDC — role is ambiguous (pre-dual-CDC firmware).
@@ -46,7 +46,7 @@ pub enum CdcRole {
 impl std::fmt::Display for CdcRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CdcRole::DebugPrints => write!(f, "debug"),
+            CdcRole::SerialPrints => write!(f, "serial"),
             CdcRole::Protocol => write!(f, "protocol"),
             CdcRole::Single => write!(f, "serial"),
         }
@@ -95,7 +95,7 @@ impl AttentioDevice {
     }
 
     /// Returns the serial prints port path (CDC0 if dual, None otherwise).
-    pub fn debug_port(&self) -> Option<&str> {
+    pub fn serial_port(&self) -> Option<&str> {
         self.cdc0.as_ref().map(|p| p.path.as_str())
     }
 
@@ -480,7 +480,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
         };
 
         let device = if ports.len() >= 2 {
-            // Dual CDC: first port = CDC0 (debug), second = CDC1 (protocol)
+            // Dual CDC: first port = CDC0 (serial prints), second = CDC1 (protocol)
             debug!(
                 "Device: dual CDC — CDC0={}, CDC1={} — serial={} — mode={}",
                 ports[0].path, ports[1].path, serial, mode
@@ -493,7 +493,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
                 usb_location,
                 cdc0: Some(CdcPort {
                     path: ports[0].path.clone(),
-                    role: CdcRole::DebugPrints,
+                    role: CdcRole::SerialPrints,
                 }),
                 cdc1: Some(CdcPort {
                     path: ports[1].path.clone(),

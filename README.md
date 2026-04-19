@@ -1,6 +1,6 @@
 # Attentio CLI
 
-CLI tool for Attentio device(s) and device management. Designed to be interactive either by intuitive commands (e.g. `attentio help`) or by using the `monitor` command for a real-time dashboard monitoring the CDC serial print stream.
+CLI tool for Attentio device(s) and device management. Designed to be interactive either by intuitive commands (e.g. `attentio help`) or by using the `monitor` command for a real-time two-pane dashboard showing AP protocol traffic (CDC1) and serial prints (CDC0).
 
 **NB!** Tested only on Ubuntu 24.04 
 
@@ -112,12 +112,15 @@ WARN Failed to open debug port /dev/ttyACM1: Permission denied
 
 ### Monitor
 
-Serial prints dashboard: full-height view of CDC0 serial output stream.
+Two-pane dashboard for real-time device monitoring:
 
-- **Auto-reconnect** — retries every 3 s when the port is unavailable or disconnects mid-session
-- **Port-busy detection** — if another process (minicom, etc.) holds the port, the pane indicates that the port is busy and retries until it is released
+- **Top pane (AP Protocol)** — AP command/response traffic and device events on CDC1
+- **Bottom pane (Serial Prints)** — CDC0 serial output stream
+- **Auto-reconnect** — retries every 3 s when a port is unavailable or disconnects mid-session
+- **Port-busy detection** — if another process (minicom, etc.) holds a port, the pane indicates that the port is busy and retries until it is released
 
 **Monitor Controls**
+- **Tab** to switch focused pane (scroll keys apply to focused pane)
 - **1-4** to set runtime log level (1=ERROR, 2=WARN, 3=INFO, 4=DEBUG)
 - **PageUp** / **PageDown** to scroll
 - **Up** / **Down** to scroll one line at a time
@@ -163,7 +166,7 @@ attentio [--json] settings save <file.json> [--device <#|serial>]       # Save a
 attentio [--json] settings load <file.json> [--device <#|serial>]       # Load settings from JSON file and apply
 
 # Interactive
-attentio monitor [--device <#|serial>]                                  # Monitor dashboard (serial prints, log level control)
+attentio monitor [--device <#|serial>]                                  # Monitor dashboard (AP traffic + serial prints, two-pane layout)
 
 # Firmware update
 attentio [--json] dfu <firmware.bin> [--device <#|serial>]              # Flash firmware via DFU (auto-enters bootloader if needed)

@@ -154,7 +154,6 @@ pub struct ApParser {
     state: ParseState,
     len: u8,
     data: Vec<u8>,
-    data_idx: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +171,6 @@ impl ApParser {
             state: ParseState::Sync,
             len: 0,
             data: Vec::new(),
-            data_idx: 0,
         }
     }
 
@@ -181,7 +179,6 @@ impl ApParser {
         self.state = ParseState::Sync;
         self.len = 0;
         self.data.clear();
-        self.data_idx = 0;
     }
 
     /// Feed a single byte into the parser.
@@ -206,15 +203,13 @@ impl ApParser {
                     self.len = byte;
                     self.data.clear();
                     self.data.reserve(byte as usize);
-                    self.data_idx = 0;
                     self.state = ParseState::Data;
                     None
                 }
             }
             ParseState::Data => {
                 self.data.push(byte);
-                self.data_idx += 1;
-                if self.data_idx >= self.len as usize {
+                if self.data.len() >= self.len as usize {
                     self.state = ParseState::Crc;
                 }
                 None

@@ -505,9 +505,6 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
         devices.push(device);
     }
 
-    // Sort devices by serial for deterministic output
-    devices.sort_by(|a, b| a.serial.cmp(&b.serial));
-
     debug!("Discovered {} device(s)", devices.len());
     devices
 }
@@ -518,9 +515,9 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
 ///   - A device index (1-based number matching the `#` column from `attentio list`)
 ///   - A serial number string (exact match)
 ///   - None: auto-selects if exactly one device is connected
-pub async fn resolve_device(serial: Option<&str>) -> Result<AttentioDevice, AttentioError> {
+pub async fn resolve_device(target: Option<&str>) -> Result<AttentioDevice, AttentioError> {
     let devices = find_devices().await?;
-    select_device(devices, serial)
+    select_device(devices, target)
 }
 
 /// Select a device from a list by serial number, index, or return the only one.
@@ -532,9 +529,9 @@ pub async fn resolve_device(serial: Option<&str>) -> Result<AttentioDevice, Atte
 /// Separated from `resolve_device` to allow unit testing without hardware.
 pub fn select_device(
     devices: Vec<AttentioDevice>,
-    serial: Option<&str>,
+    target: Option<&str>,
 ) -> Result<AttentioDevice, AttentioError> {
-    match serial {
+    match target {
         Some(target) => {
             // If the target parses as a positive integer, treat it as a 1-based device index.
             // Serial numbers are 24-char hex strings (e.g. "3A002B000F51363439373834"),

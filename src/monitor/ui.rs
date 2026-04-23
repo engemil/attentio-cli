@@ -21,37 +21,85 @@ pub fn render(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    render_ap_pane(frame, app, chunks[0]);
-    render_serial_pane(frame, app, chunks[1]);
+    render_pane(
+        frame,
+        PaneView {
+            area: chunks[0],
+            focused: app.active_pane == Pane::Protocol,
+            title_prefix: "AP Protocol (CDC1)",
+            no_port_title: "(no port)",
+            port_path: app.ap_port_path.as_deref(),
+            connected: app.ap_connected,
+            reconnecting: app.ap_reconnecting,
+            port_busy: app.ap_port_busy,
+            show_disconnected_without_port: false,
+            disconnected_text_when_idle: "(not connected)",
+            waiting_text: Some("(waiting for AP traffic...)"),
+            lines: &app.ap_lines,
+            scroll: app.ap_scroll,
+        },
+    );
+    render_pane(
+        frame,
+        PaneView {
+            area: chunks[1],
+            focused: app.active_pane == Pane::Serial,
+            title_prefix: "Serial Prints (CDC0)",
+            no_port_title: "(not connected)",
+            port_path: app.serial_port_path.as_deref(),
+            connected: app.serial_connected,
+            reconnecting: app.serial_reconnecting,
+            port_busy: app.serial_port_busy,
+            show_disconnected_without_port: true,
+            disconnected_text_when_idle: "(not connected)",
+            waiting_text: None,
+            lines: &app.serial_lines,
+            scroll: app.serial_scroll,
+        },
+    );
     render_status_bar(frame, app, chunks[2]);
 }
 
-/// Render the AP protocol traffic pane (CDC1) — top pane.
-fn render_ap_pane(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.active_pane == Pane::Protocol;
-    let border_color = if focused {
+struct PaneView<'a> {
+    area: Rect,
+    focused: bool,
+    title_prefix: &'a str,
+    no_port_title: &'a str,
+    port_path: Option<&'a str>,
+    connected: bool,
+    reconnecting: bool,
+    port_busy: bool,
+    show_disconnected_without_port: bool,
+    disconnected_text_when_idle: &'a str,
+    waiting_text: Option<&'a str>,
+    lines: &'a [String],
+    scroll: usize,
+}
+
+fn render_pane(frame: &mut Frame, pane: PaneView<'_>) {
+    let border_color = if pane.focused {
         Color::Yellow
     } else {
         Color::DarkGray
     };
 
     let title = match (
-        &app.ap_port_path,
-        app.ap_connected,
-        app.ap_reconnecting,
-        app.ap_port_busy,
+        pane.port_path,
+        pane.connected,
+        pane.reconnecting,
+        pane.port_busy,
     ) {
-        (Some(path), true, _, _) => format!(" AP Protocol (CDC1) — {} ", path),
+        (Some(path), true, _, _) => format!(" {} — {} ", pane.title_prefix, path),
         (Some(path), false, _, true) => {
-            format!(" AP Protocol (CDC1) — {} (PORT BUSY) ", path)
+            format!(" {} — {} (PORT BUSY) ", pane.title_prefix, path)
         }
         (Some(path), false, true, _) => {
-            format!(" AP Protocol (CDC1) — {} (reconnecting...) ", path)
+            format!(" {} — {} (reconnecting...) ", pane.title_prefix, path)
         }
         (Some(path), false, false, false) => {
-            format!(" AP Protocol (CDC1) — {} (not connected) ", path)
+            format!(" {} — {} (not connected) ", pane.title_prefix, path)
         }
-        (None, _, _, _) => " AP Protocol (CDC1) — (no port) ".to_string(),
+        (None, _, _, _) => format!(" {} — {} ", pane.title_prefix, pane.no_port_title),
     };
 
     let block = Block::default()
@@ -59,16 +107,16 @@ fn render_ap_pane(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = block.inner(pane.area);
+    frame.render_widget(block, pane.area);
 
-    if !app.ap_connected && app.ap_port_path.is_some() {
-        let (text, color) = if app.ap_port_busy {
+    if !pane.connected && (pane.show_disconnected_without_port || pane.port_path.is_some()) {
+        let (text, color) = if pane.port_busy {
             ("(port busy — close other process)", Color::Red)
-        } else if app.ap_reconnecting {
+        } else if pane.reconnecting {
             ("(reconnecting...)", Color::Yellow)
         } else {
-            ("(not connected)", Color::DarkGray)
+            (pane.disconnected_text_when_idle, Color::DarkGray)
         };
         let msg = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
             .alignment(Alignment::Center);
@@ -78,9 +126,9 @@ fn render_ap_pane(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    if app.ap_lines.is_empty() {
+    if let Some(waiting_text) = pane.waiting_text.filter(|_| pane.lines.is_empty()) {
         let msg = Paragraph::new(Line::from(Span::styled(
-            "(waiting for AP traffic...)",
+            waiting_text,
             Style::default().fg(Color::DarkGray),
         )))
         .alignment(Alignment::Center);
@@ -90,62 +138,7 @@ fn render_ap_pane(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    render_scrolled_content(frame, &app.ap_lines, app.ap_scroll, inner);
-}
-
-/// Render the serial prints pane (CDC0) — bottom pane.
-fn render_serial_pane(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.active_pane == Pane::Serial;
-    let border_color = if focused {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    };
-
-    let title = match (
-        &app.serial_port_path,
-        app.serial_connected,
-        app.serial_reconnecting,
-        app.serial_port_busy,
-    ) {
-        (Some(path), true, _, _) => format!(" Serial Prints (CDC0) — {} ", path),
-        (Some(path), false, _, true) => {
-            format!(" Serial Prints (CDC0) — {} (PORT BUSY) ", path)
-        }
-        (Some(path), false, true, _) => {
-            format!(" Serial Prints (CDC0) — {} (reconnecting...) ", path)
-        }
-        (Some(path), false, false, false) => {
-            format!(" Serial Prints (CDC0) — {} (not connected) ", path)
-        }
-        (None, _, _, _) => " Serial Prints (CDC0) — (not connected) ".to_string(),
-    };
-
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if !app.serial_connected {
-        let (text, color) = if app.serial_port_busy {
-            ("(port busy — close other process)", Color::Red)
-        } else if app.serial_reconnecting {
-            ("(reconnecting...)", Color::Yellow)
-        } else {
-            ("(not connected)", Color::DarkGray)
-        };
-        let msg = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
-            .alignment(Alignment::Center);
-        let y_offset = inner.height / 2;
-        let centered = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
-        frame.render_widget(msg, centered);
-        return;
-    }
-
-    render_scrolled_content(frame, &app.serial_lines, app.serial_scroll, inner);
+    render_scrolled_content(frame, pane.lines, pane.scroll, inner);
 }
 
 /// Render a scrollable text buffer into a given area.

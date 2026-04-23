@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
-use rusb::UsbContext;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
@@ -21,6 +20,9 @@ const FIRMWARE_MAGIC: u32 = 0xDEAD_BEEF;
 
 /// Size of the application header in bytes.
 const HEADER_SIZE: usize = 32;
+
+/// Offset to the actual firmware vector table (after header and padding).
+const VECTOR_TABLE_OFFSET: usize = 0x100;
 
 /// Base address for the application in flash (after bootloader).
 const APP_BASE_ADDRESS: u32 = 0x0800_4000;
@@ -81,7 +83,7 @@ impl FirmwareHeader {
     }
 
     /// Validate the header fields. Returns Ok on success, Err with description on failure.
-    fn validate(&self, file_size: usize) -> Result<()> {
+    fn validate(&self, data: &[u8]) -> Result<()> {
         // Magic must match exactly
         if self.magic != FIRMWARE_MAGIC {
             anyhow::bail!(
@@ -107,7 +109,8 @@ impl FirmwareHeader {
         }
 
         // Size sanity check — header.size should roughly correspond to file size
-        let payload_size = file_size.saturating_sub(HEADER_SIZE);
+        let file_size = data.len();
+        let payload_size = file_size.saturating_sub(VECTOR_TABLE_OFFSET);
         if self.size == 0 {
             warn!("firmware header reports size = 0 (unsigned binary?)");
         } else if (self.size as usize) > payload_size + 1024 {
@@ -115,6 +118,20 @@ impl FirmwareHeader {
                 "firmware header size ({}) is larger than payload ({} bytes) — possible mismatch",
                 self.size, payload_size
             );
+        }
+
+        // CRC32 check over the payload (after vector table offset)
+        if self.crc32 != 0 && data.len() > VECTOR_TABLE_OFFSET {
+            let computed_crc = crc32fast::hash(&data[VECTOR_TABLE_OFFSET..]);
+            if computed_crc != self.crc32 {
+                anyhow::bail!(
+                    "firmware CRC32 mismatch: header says 0x{:08X}, computed 0x{:08X} — \
+                     file may be corrupted",
+                    self.crc32,
+                    computed_crc
+                );
+            }
+            debug!("firmware CRC32 verified: 0x{:08X}", self.crc32);
         }
 
         debug!(
@@ -180,7 +197,7 @@ async fn execute_enter_internal(device: Option<&str>) -> Result<String> {
     let ap_dfu_enter_packet = build_packet(CMD_DFU_ENTER, &[]);
 
     let mut conn = DeviceConnection::open(&port_path)
-        .context(format!("failed to open serial port {}", port_path))?;
+        .with_context(|| format!("failed to open serial port {}", port_path))?;
 
     // Brief delay so the CDC ACM link is up.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -307,8 +324,8 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
         anyhow::bail!("firmware file not found: {}", firmware_path);
     }
 
-    let firmware_data =
-        std::fs::read(path).context(format!("failed to read firmware file: {}", firmware_path))?;
+    let firmware_data = std::fs::read(path)
+        .with_context(|| format!("failed to read firmware file: {}", firmware_path))?;
 
     if firmware_data.is_empty() {
         anyhow::bail!("firmware file is empty: {}", firmware_path);
@@ -324,7 +341,7 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
 
     // Validate the application header
     let header = FirmwareHeader::parse(&firmware_data)?;
-    header.validate(firmware_data.len())?;
+    header.validate(&firmware_data)?;
 
     // ── Step 2: Ensure device is in bootloader mode ─────────────────────────
 
@@ -408,43 +425,19 @@ fn open_dfu_by_serial<C: rusb::UsbContext>(
     context: &C,
     target_serial: &str,
 ) -> Result<dfu_libusb::Dfu<C>> {
-    let devices = context
-        .devices()
-        .context("failed to enumerate USB devices")?;
-
-    for device in devices.iter() {
-        let desc = match device.device_descriptor() {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
-            continue;
-        }
-
-        let handle = match device.open() {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
-
-        // Check if the serial matches
-        match handle.read_serial_number_string_ascii(&desc) {
-            Ok(s) if s == target_serial => {
-                debug!("Found DFU device with serial {}", target_serial);
-                return dfu_libusb::DfuLibusb::from_usb_device(
-                    device, handle, DFU_IFACE, DFU_ALT,
+    if let Some((device, _desc, handle)) =
+        find_matching_attentio_usb_device(context, Some(target_serial))?
+    {
+        debug!("Found DFU device with serial {}", target_serial);
+        return dfu_libusb::DfuLibusb::from_usb_device(device, handle, DFU_IFACE, DFU_ALT)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to open DFU device (serial {}): {} — \
+                     check USB permissions (udev rules) and ensure the device is in bootloader mode",
+                    target_serial,
+                    e
                 )
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to open DFU device (serial {}): {} — \
-                         check USB permissions (udev rules) and ensure the device is in bootloader mode",
-                        target_serial,
-                        e
-                    )
-                });
-            }
-            _ => continue,
-        }
+            });
     }
 
     anyhow::bail!(
@@ -483,28 +476,7 @@ fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize, serial: Option<&s
 fn reset_dfu_device(serial: Option<&str>) -> Result<()> {
     let context = rusb::Context::new().context("failed to create USB context")?;
 
-    for device in context.devices()?.iter() {
-        let desc = match device.device_descriptor() {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
-            continue;
-        }
-
-        let handle = device
-            .open()
-            .context("failed to open DFU device for reset")?;
-
-        // If serial is specified, verify it matches
-        if let Some(target) = serial {
-            match handle.read_serial_number_string_ascii(&desc) {
-                Ok(s) if s == target => {} // match — proceed with reset
-                _ => continue,             // no match — skip
-            }
-        }
-
+    if let Some((_device, _desc, handle)) = find_matching_attentio_usb_device(&context, serial)? {
         handle.reset().context("failed to reset DFU device")?;
         debug!("DFU device reset successfully");
 
@@ -529,28 +501,7 @@ fn wait_for_dfu_device_sync(serial: Option<&str>) -> Result<()> {
         std::thread::sleep(poll_interval);
 
         let context = rusb::Context::new().context("failed to create USB context")?;
-        for device in context.devices()?.iter() {
-            let desc = match device.device_descriptor() {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
-                continue;
-            }
-
-            // If serial is specified, verify it matches
-            if let Some(target) = serial {
-                let handle = match device.open() {
-                    Ok(h) => h,
-                    Err(_) => continue,
-                };
-                match handle.read_serial_number_string_ascii(&desc) {
-                    Ok(s) if s == target => {} // match
-                    _ => continue,             // no match
-                }
-            }
-
+        if find_matching_attentio_usb_device(&context, serial)?.is_some() {
             debug!("DFU device re-enumerated after reset");
             return Ok(());
         }
@@ -559,6 +510,50 @@ fn wait_for_dfu_device_sync(serial: Option<&str>) -> Result<()> {
             anyhow::bail!("timed out waiting for DFU device to re-enumerate after reset");
         }
     }
+}
+
+fn find_matching_attentio_usb_device<C: rusb::UsbContext>(
+    context: &C,
+    serial: Option<&str>,
+) -> Result<
+    Option<(
+        rusb::Device<C>,
+        rusb::DeviceDescriptor,
+        rusb::DeviceHandle<C>,
+    )>,
+> {
+    let devices = context
+        .devices()
+        .context("failed to enumerate USB devices")?;
+
+    for device in devices.iter() {
+        let desc = match device.device_descriptor() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
+            continue;
+        }
+
+        let handle = match device.open() {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+
+        if let Some(target_serial) = serial {
+            match handle.read_serial_number_string_ascii(&desc) {
+                Ok(s) if s == target_serial => {
+                    return Ok(Some((device, desc, handle)));
+                }
+                _ => continue,
+            }
+        } else {
+            return Ok(Some((device, desc, handle)));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Inner flash implementation — called by flash_dfu_device with retry logic.
@@ -650,8 +645,22 @@ fn flash_dfu_device_inner(
     });
 
     // Flash the firmware
-    dfu.download_from_slice(firmware_data)
-        .map_err(|e| anyhow::anyhow!("DFU download failed: {}", e))?;
-
-    Ok(())
+    match dfu.download_from_slice(firmware_data) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let err_str = e.to_string();
+            // When manifestation triggers a reboot, the device drops off the bus.
+            // Depending on OS/timing, this surfaces as an I/O Error, Broken Pipe, or No such device.
+            if err_str.contains("Input/Output Error")
+                || err_str.contains("Pipe")
+                || err_str.contains("No such device")
+                || err_str.contains("Not found")
+            {
+                debug!("DFU download completed with expected USB drop: {}", e);
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("DFU download failed: {}", e))
+            }
+        }
+    }
 }

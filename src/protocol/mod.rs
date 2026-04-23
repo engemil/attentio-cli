@@ -8,4 +8,4 @@ pub mod crc;
 pub mod packet;
 
 // Re-export the main types for convenience.
-pub use client::{open_client, ApClient};
+pub use client::{open_client, open_client_for_device, ApClient};

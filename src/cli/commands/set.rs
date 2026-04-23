@@ -21,7 +21,7 @@ async fn execute_rgb(client: &mut ApClient, r: u8, g: u8, b: u8, json: bool) -> 
     client
         .set_rgb(r, g, b)
         .await
-        .context(format!("failed to set RGB({}, {}, {})", r, g, b))?;
+        .with_context(|| format!("failed to set RGB({}, {}, {})", r, g, b))?;
 
     if json {
         let output = json!({
@@ -50,7 +50,7 @@ async fn execute_hsv(client: &mut ApClient, h: u16, s: u8, v: u8, json: bool) ->
     client
         .set_hsv(h, s, v)
         .await
-        .context(format!("failed to set HSV({}, {}, {})", h, s, v))?;
+        .with_context(|| format!("failed to set HSV({}, {}, {})", h, s, v))?;
 
     if json {
         let output = json!({
@@ -73,7 +73,7 @@ async fn execute_brightness(client: &mut ApClient, value: u8, json: bool) -> Res
     client
         .set_brightness(value)
         .await
-        .context(format!("failed to set brightness to {}%", value))?;
+        .with_context(|| format!("failed to set brightness to {}%", value))?;
 
     if json {
         let output = json!({

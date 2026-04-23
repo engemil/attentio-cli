@@ -2,8 +2,8 @@ mod cli;
 mod device;
 mod error;
 mod json_output;
-mod protocol;
 mod monitor;
+mod protocol;
 
 use anyhow::Result;
 use clap::Parser;
@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
         }
 
         // Version info
-        Command::Version => cli::commands::version::execute(cli.json).await,
+        Command::Version => cli::commands::version::execute(cli.json),
     };
 
     // Handle errors: format as JSON if --json flag is set

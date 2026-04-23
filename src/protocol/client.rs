@@ -112,11 +112,21 @@ pub fn effects_submode_name(submode: u8) -> &'static str {
 /// This is the standard pattern used by all command handlers that need to
 /// communicate with a device: resolve by serial/index, find the AP port,
 /// wait for CDC ACM to settle, and open the protocol client.
-pub async fn open_client(device: Option<&str>) -> Result<ApClient> {
-    let dev = resolve_device(device)
+pub async fn open_client(target: Option<&str>) -> Result<ApClient> {
+    let dev = resolve_device(target)
         .await
         .context("failed to resolve device")?;
 
+    open_client_for_device(&dev).await
+}
+
+/// Open an AP client connection to an already-resolved device.
+///
+/// Use this when you already have a resolved [`AttentioDevice`] and want to
+/// avoid a redundant device enumeration.
+pub async fn open_client_for_device(
+    dev: &crate::device::discovery::AttentioDevice,
+) -> Result<ApClient> {
     let port_path = dev
         .ap_port()
         .ok_or_else(|| anyhow::anyhow!("device '{}' has no protocol port", dev.serial))?
@@ -125,7 +135,8 @@ pub async fn open_client(device: Option<&str>) -> Result<ApClient> {
     // Brief delay to let CDC ACM link settle after enumeration.
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    ApClient::open(&port_path).context(format!("failed to open protocol port {}", port_path))
+    ApClient::open(&port_path)
+        .with_context(|| format!("failed to open protocol port {}", port_path))
 }
 
 /// AP protocol client wrapping a serial connection.

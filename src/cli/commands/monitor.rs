@@ -49,10 +49,33 @@ enum ReaderMsg {
     ApConnected,
 }
 
+enum OpenPortResult {
+    Connected(DeviceConnection),
+    Busy,
+    Failed,
+}
+
 /// Restore the terminal to its normal state.
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = io::stdout().execute(LeaveAlternateScreen);
+}
+
+fn try_open_port(path: &str, label: &str, timeout: Duration) -> OpenPortResult {
+    match DeviceConnection::open(path) {
+        Ok(conn) => {
+            info!("{} opened: {}", label, path);
+            OpenPortResult::Connected(conn.with_timeout(timeout))
+        }
+        Err(e) if e.is_port_busy() => {
+            warn!("{}", e);
+            OpenPortResult::Busy
+        }
+        Err(e) => {
+            warn!("Failed to open {} {}: {}", label.to_lowercase(), path, e);
+            OpenPortResult::Failed
+        }
+    }
 }
 
 /// Execute the `monitor` command — two-pane monitor dashboard.
@@ -86,19 +109,16 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     let mut serial_reconnecting = false;
     let mut serial_port_busy = false;
     if let Some(ref path) = serial_port_path {
-        match DeviceConnection::open(path) {
-            Ok(conn) => {
-                let conn = conn.with_timeout(Duration::from_millis(500));
+        match try_open_port(path, "Serial port", Duration::from_millis(500)) {
+            OpenPortResult::Connected(conn) => {
                 serial_connected = true;
-                info!("Serial port opened: {}", path);
                 let tx_serial = tx.clone();
                 let handle = tokio::spawn(async move {
                     serial_reader_task(conn, tx_serial).await;
                 });
                 task_handles.push(handle);
             }
-            Err(e) if e.is_port_busy() => {
-                warn!("{}", e);
+            OpenPortResult::Busy => {
                 serial_port_busy = true;
                 let tx_reconnect = tx.clone();
                 let path_clone = path.clone();
@@ -107,8 +127,7 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
                 });
                 task_handles.push(handle);
             }
-            Err(e) => {
-                warn!("Failed to open serial port {}: {}", path, e);
+            OpenPortResult::Failed => {
                 serial_reconnecting = true;
                 let tx_reconnect = tx.clone();
                 let path_clone = path.clone();
@@ -125,19 +144,16 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
     let mut ap_reconnecting = false;
     let mut ap_port_busy = false;
     if let Some(ref path) = ap_port_path {
-        match DeviceConnection::open(path) {
-            Ok(conn) => {
-                let conn = conn.with_timeout(Duration::from_millis(100));
+        match try_open_port(path, "AP port", Duration::from_millis(100)) {
+            OpenPortResult::Connected(conn) => {
                 ap_connected = true;
-                info!("AP port opened: {}", path);
                 let tx_ap = tx.clone();
                 let handle = tokio::spawn(async move {
                     ap_reader_writer_task(conn, tx_ap, ap_cmd_rx).await;
                 });
                 task_handles.push(handle);
             }
-            Err(e) if e.is_port_busy() => {
-                warn!("{}", e);
+            OpenPortResult::Busy => {
                 ap_port_busy = true;
                 let tx_reconnect = tx.clone();
                 let path_clone = path.clone();
@@ -146,8 +162,7 @@ pub async fn execute(device: Option<&str>) -> Result<()> {
                 });
                 task_handles.push(handle);
             }
-            Err(e) => {
-                warn!("Failed to open AP port {}: {}", path, e);
+            OpenPortResult::Failed => {
                 ap_reconnecting = true;
                 let tx_reconnect = tx.clone();
                 let path_clone = path.clone();
@@ -419,19 +434,23 @@ async fn serial_reader_task(mut conn: DeviceConnection, tx: mpsc::Sender<ReaderM
 async fn serial_reconnect_task(port_path: String, tx: mpsc::Sender<ReaderMsg>) {
     loop {
         tokio::time::sleep(RECONNECT_INTERVAL).await;
-        match DeviceConnection::open(&port_path) {
-            Ok(conn) => {
-                let conn = conn.with_timeout(Duration::from_millis(500));
+        match try_open_port(&port_path, "Serial port", Duration::from_millis(500)) {
+            OpenPortResult::Connected(conn) => {
                 if tx.send(ReaderMsg::SerialReconnected).await.is_err() {
                     return;
                 }
                 serial_reader_task(conn, tx).await;
                 return;
             }
-            Err(e) if e.is_port_busy() => {
-                let _ = tx.send(ReaderMsg::SerialPortBusy(e.to_string())).await;
+            OpenPortResult::Busy => {
+                let _ = tx
+                    .send(ReaderMsg::SerialPortBusy(format!(
+                        "port {} is busy — another process has it open",
+                        port_path
+                    )))
+                    .await;
             }
-            Err(_) => {}
+            OpenPortResult::Failed => {}
         }
     }
 }
@@ -505,19 +524,23 @@ async fn ap_reconnect_task(
 ) {
     loop {
         tokio::time::sleep(RECONNECT_INTERVAL).await;
-        match DeviceConnection::open(&port_path) {
-            Ok(conn) => {
-                let conn = conn.with_timeout(Duration::from_millis(100));
+        match try_open_port(&port_path, "AP port", Duration::from_millis(100)) {
+            OpenPortResult::Connected(conn) => {
                 if tx.send(ReaderMsg::ApConnected).await.is_err() {
                     return;
                 }
                 ap_reader_writer_task(conn, tx, cmd_rx).await;
                 return;
             }
-            Err(e) if e.is_port_busy() => {
-                let _ = tx.send(ReaderMsg::ApPortBusy(e.to_string())).await;
+            OpenPortResult::Busy => {
+                let _ = tx
+                    .send(ReaderMsg::ApPortBusy(format!(
+                        "port {} is busy — another process has it open",
+                        port_path
+                    )))
+                    .await;
             }
-            Err(_) => {}
+            OpenPortResult::Failed => {}
         }
     }
 }

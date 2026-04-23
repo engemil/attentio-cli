@@ -13,6 +13,44 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-04-23)
+
+Added
+
+- **Shared UI/Monitor Helpers** — consolidated `render_ap_pane` and `render_serial_pane` 
+  into a unified `render_pane` helper using a new `PaneView` structure, reducing code 
+  duplication in the TUI renderer.
+
+Changed
+
+- **Optimized Device Client Connection** — added `open_client_for_device` to 
+  `protocol/client.rs` which bypasses redundant device resolution when the `AttentioDevice`
+  is already known. Used by `metadata` and `settings` commands to speed up execution.
+- **Refactored DFU USB Matching** — extracted `find_matching_attentio_usb_device` to 
+  reduce duplication across `open_dfu_by_serial`, `reset_dfu_device`, and 
+  `wait_for_dfu_device_sync` in `dfu.rs`.
+- **Refactored Monitor Port Handling** — extracted `try_open_port` in `monitor.rs` 
+  for cleaner connection state management and error handling.
+- **Simplified AP Parser** — removed redundant `data_idx` from `ApParser` state; it now 
+  reliably uses `data.len()` for payload progress tracking.
+- **Version Command Sync** — made the `version` command synchronous since it no longer 
+  performs async I/O.
+- Removed automatic sorting by serial number in `devices_from_ports` discovery.
+
+Fixed
+
+- **DFU Success Handling** — fixed a false-positive `rusb: Input/Output Error` or
+  `Pipe` error that occurred immediately after successfully flashing a device.
+  The error was caused by the device automatically dropping off the USB bus to
+  reboot into the newly flashed firmware. The CLI now catches these expected USB
+  drop errors during the manifestation phase and treats them as a successful flash.
+- **Firmware CRC32 Calculation** — fixed a bug where the CLI computed the CRC32 of the
+  firmware payload including 224 bytes of padding, causing a mismatch against properly
+  signed firmware. The CLI now correctly hashes the firmware starting from the
+  `VECTOR_TABLE_OFFSET` (`0x100`) as expected by the bootloader.
+
+---
+
 ## [Development] (2026-04-19)
 
 Changed

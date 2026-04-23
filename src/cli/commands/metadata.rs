@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::cli::MetadataAction;
 use crate::json_output;
-use crate::protocol::{open_client, ApClient};
+use crate::protocol::{open_client_for_device, ApClient};
 
 /// Execute the `metadata` command — query device metadata via AP protocol.
 ///
@@ -17,7 +17,7 @@ pub async fn execute(
         .await
         .context("failed to resolve device")?;
 
-    let mut client = open_client(Some(&dev.serial)).await?;
+    let mut client = open_client_for_device(&dev).await?;
 
     match action {
         None | Some(MetadataAction::List) => execute_list(&mut client, &dev.serial, json).await,
@@ -59,7 +59,7 @@ async fn execute_get(client: &mut ApClient, key: &str, serial: &str, json: bool)
     let (_key, value) = client
         .get_metadata_field(key)
         .await
-        .context(format!("failed to get metadata field '{}'", key))?;
+        .with_context(|| format!("failed to get metadata field '{}'", key))?;
 
     if json {
         let output = json!({

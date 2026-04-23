@@ -72,7 +72,7 @@ fn print_table(devices: &[AttentioDevice]) {
 
     let mode_width = devices
         .iter()
-        .map(|d| format_status(d).len())
+        .map(|d| d.mode.to_string().len())
         .max()
         .unwrap_or(6)
         .max(6);
@@ -109,7 +109,7 @@ fn print_table(devices: &[AttentioDevice]) {
             i + 1,
             device.product.as_deref().unwrap_or("-"),
             device.device_type.as_deref().unwrap_or("-"),
-            format_status(device),
+            device.mode,
             device.serial,
         );
 
@@ -126,11 +126,6 @@ fn print_table(devices: &[AttentioDevice]) {
 
     println!();
     println!("{} device(s) found.", devices.len());
-}
-
-/// Format the STATUS column for a device.
-fn format_status(device: &AttentioDevice) -> String {
-    device.mode.to_string()
 }
 
 fn format_ports(device: &AttentioDevice) -> String {

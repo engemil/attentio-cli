@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::cli::SettingsAction;
 use crate::json_output;
-use crate::protocol::{open_client, ApClient};
+use crate::protocol::{open_client_for_device, ApClient};
 
 /// Execute the `settings` command — manage device settings via AP protocol.
 ///
@@ -20,7 +20,7 @@ pub async fn execute(
         .await
         .context("failed to resolve device")?;
 
-    let mut client = open_client(Some(&dev.serial)).await?;
+    let mut client = open_client_for_device(&dev).await?;
 
     match action {
         None | Some(SettingsAction::List) => execute_list(&mut client, &dev.serial, json).await,
@@ -69,7 +69,7 @@ async fn execute_get(client: &mut ApClient, key: &str, serial: &str, json: bool)
     let (_key, value) = client
         .settings_get(key)
         .await
-        .context(format!("failed to get setting '{}'", key))?;
+        .with_context(|| format!("failed to get setting '{}'", key))?;
 
     if json {
         let output = json!({
@@ -96,7 +96,7 @@ async fn execute_set(
     client
         .settings_set(key, value)
         .await
-        .context(format!("failed to set setting '{}' = '{}'", key, value))?;
+        .with_context(|| format!("failed to set setting '{}' = '{}'", key, value))?;
 
     if json {
         let output = json!({
@@ -126,7 +126,8 @@ async fn execute_save(client: &mut ApClient, file: &str, serial: &str, json: boo
     let json_str =
         serde_json::to_string_pretty(&settings).context("failed to serialize settings")?;
 
-    std::fs::write(file, &json_str).context(format!("failed to write settings to '{}'", file))?;
+    std::fs::write(file, &json_str)
+        .with_context(|| format!("failed to write settings to '{}'", file))?;
 
     if json {
         let output = json!({
@@ -151,10 +152,10 @@ async fn execute_load(client: &mut ApClient, file: &str, serial: &str, json: boo
     }
 
     let content = std::fs::read_to_string(path)
-        .context(format!("failed to read settings from '{}'", file))?;
+        .with_context(|| format!("failed to read settings from '{}'", file))?;
 
     let settings: BTreeMap<String, String> = serde_json::from_str(&content)
-        .context(format!("failed to parse settings file '{}'", file))?;
+        .with_context(|| format!("failed to parse settings file '{}'", file))?;
 
     if settings.is_empty() {
         if json {
@@ -176,7 +177,7 @@ async fn execute_load(client: &mut ApClient, file: &str, serial: &str, json: boo
         client
             .settings_set(key, value)
             .await
-            .context(format!("failed to set '{}' = '{}'", key, value))?;
+            .with_context(|| format!("failed to set '{}' = '{}'", key, value))?;
 
         if !json {
             println!("  {} = {}", key, value);

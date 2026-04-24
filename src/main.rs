@@ -1,9 +1,5 @@
-mod cli;
-mod device;
-mod error;
-mod json_output;
-mod monitor;
-mod protocol;
+use attentio::cli;
+use attentio::json_output;
 
 use anyhow::Result;
 use clap::Parser;

@@ -13,6 +13,29 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-04-24)
+
+Added
+
+- **Library crate exposure (`[lib]`)** — `attentio-cli` now builds as both a
+  binary and a library. Added an explicit `[lib]` section to `Cargo.toml`
+  (`name = "attentio"`, `path = "src/lib.rs"`) so that external Rust crates
+  can depend on the CLI's protocol, device, monitor, and error modules as a
+  library. This is consumed by `attentio-desktop`'s
+  `rust_lib_attentio_desktop` to reuse `libattentio` directly instead of
+  duplicating protocol code.
+
+Changed
+
+- **`main.rs` imports** — the binary now uses `use attentio::cli;` and
+  `use attentio::json_output;` (two extern-crate imports) instead of
+  `mod cli; mod device; ...` since the modules live in the library crate.
+  Unused extern imports for `device`, `error`, `monitor`, and `protocol`
+  were removed — those modules are still accessed transitively through
+  `cli::commands::*`.
+
+---
+
 ## [Development] (2026-04-23)
 
 Added

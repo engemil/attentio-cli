@@ -5,6 +5,10 @@ edition = "2021"
 description = "CLI tool for AttentioLight-1 (AL-1) device management"
 license = "MIT"
 
+[lib]
+name = "attentio"
+path = "src/lib.rs"
+
 [[bin]]
 name = "attentio"
 path = "src/main.rs"

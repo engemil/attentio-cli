@@ -13,6 +13,24 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-04-26)
+
+Added
+
+- **Last-known device-name cache** — `device::discovery` now keeps a
+  process-local `OnceLock<Mutex<HashMap<String, String>>>` mapping USB
+  serial → most recently observed `device_name` setting. `find_devices`
+  updates the entry on every successful AP read of `device_name` and falls
+  back to the cached value when the read fails (e.g. the AP port is
+  momentarily busy). Consumers (CLI `list`, `attentio-desktop`, future
+  bindings) thus see a stable name across transient enumeration blips
+  rather than `None` followed by a fallback for one tick.
+
+  No public API change; the cache lives entirely in the library and self-
+  corrects on the next successful read.
+
+---
+
 ## [Development] (2026-04-24)
 
 Added

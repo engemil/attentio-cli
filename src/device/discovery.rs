@@ -1,9 +1,35 @@
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use rusb::UsbContext;
 use serde::Serialize;
 use serialport::{SerialPortType, UsbPortInfo};
 use tracing::{debug, trace, warn};
+
+/// Process-local cache of the last successfully read `device_name` setting,
+/// keyed by USB serial number.
+///
+/// Reading the `device_name` setting requires opening the AP port and doing a
+/// round-trip over the serial protocol. That can fail transiently (port busy
+/// from another concurrent caller, momentary I/O error, etc.), in which case
+/// we'd otherwise return `product = None` and any UI consumer would briefly
+/// flip to a fallback label. The cache lets us keep showing the last-known
+/// good name across such blips. The cache is cleared by individual entries
+/// only when explicitly invalidated; a process restart resets everything.
+fn name_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_remember(serial: &str, name: &str) {
+    if let Ok(mut g) = name_cache().lock() {
+        g.insert(serial.to_string(), name.to_string());
+    }
+}
+
+fn cache_lookup(serial: &str) -> Option<String> {
+    name_cache().lock().ok().and_then(|g| g.get(serial).cloned())
+}
 
 use super::config::{self, ATTENTIO_PID, ATTENTIO_VID};
 use crate::error::AttentioError;
@@ -171,13 +197,17 @@ pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
         match query_device_name(&port_path).await {
             Ok(name) => {
                 debug!("Device {} name: {}", device.serial, name);
+                cache_remember(&device.serial, &name);
                 device.product = Some(name);
             }
             Err(e) => {
                 debug!(
-                    "Failed to query device_name for {} on {}: {}",
+                    "Failed to query device_name for {} on {}: {} — using cached value if any",
                     device.serial, port_path, e
                 );
+                if let Some(cached) = cache_lookup(&device.serial) {
+                    device.product = Some(cached);
+                }
             }
         }
     }

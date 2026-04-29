@@ -7,7 +7,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::device::config::{self, ATTENTIO_PID, ATTENTIO_VID};
+use crate::device::config;
 use crate::device::connection::DeviceConnection;
 use crate::device::discovery::{find_devices, find_devices_fast, resolve_device, DeviceMode};
 use crate::json_output;
@@ -94,17 +94,11 @@ impl FirmwareHeader {
             );
         }
 
-        // VID/PID mismatch is a warning, not a hard error (could be a different product variant)
-        if self.vid != ATTENTIO_VID {
+        // VID check: warn if not our registered VID (could be wrong firmware)
+        if self.vid != config::ATTENTIO_VID {
             warn!(
-                "firmware VID 0x{:04X} does not match expected 0x{:04X}",
-                self.vid, ATTENTIO_VID
-            );
-        }
-        if self.pid != ATTENTIO_PID {
-            warn!(
-                "firmware PID 0x{:04X} does not match expected 0x{:04X}",
-                self.pid, ATTENTIO_PID
+                "firmware VID 0x{:04X} does not match expected 0x{:04X} (pid.codes)",
+                self.vid, config::ATTENTIO_VID
             );
         }
 
@@ -532,7 +526,7 @@ fn find_matching_attentio_usb_device<C: rusb::UsbContext>(
             Err(_) => continue,
         };
 
-        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
+        if !config::is_known_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
 
@@ -573,14 +567,30 @@ fn flash_dfu_device_inner(
     let mut dfu = if let Some(target_serial) = serial {
         open_dfu_by_serial(&context, target_serial)?
     } else {
-        dfu_libusb::DfuLibusb::open(&context, ATTENTIO_VID, ATTENTIO_PID, DFU_IFACE, DFU_ALT)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to open DFU device: {} — \
-                     check USB permissions (udev rules) and ensure the device is in bootloader mode",
-                    e
-                )
-            })?
+        // Try pid.codes VID/PID first, then STM32 DFU fallback
+        dfu_libusb::DfuLibusb::open(
+            &context,
+            config::ATTENTIO_VID,
+            config::ATTENTIO_PID,
+            DFU_IFACE,
+            DFU_ALT,
+        )
+        .or_else(|_| {
+            dfu_libusb::DfuLibusb::open(
+                &context,
+                config::STM_DFU_VID,
+                config::STM_DFU_PID,
+                DFU_IFACE,
+                DFU_ALT,
+            )
+        })
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to open DFU device: {} — \
+                 check USB permissions (udev rules) and ensure the device is in bootloader mode",
+                e
+            )
+        })?
     };
 
     // Set the target flash address (after bootloader)

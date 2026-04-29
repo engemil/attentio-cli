@@ -31,7 +31,7 @@ fn cache_lookup(serial: &str) -> Option<String> {
     name_cache().lock().ok().and_then(|g| g.get(serial).cloned())
 }
 
-use super::config::{self, ATTENTIO_PID, ATTENTIO_VID};
+use super::config;
 use crate::error::AttentioError;
 use crate::protocol::ApClient;
 
@@ -265,8 +265,8 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
             continue;
         };
 
-        // Check if this is our device
-        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
+        // Check if this is our device (pid.codes VID/PID or STM32 DFU fallback)
+        if !config::is_known_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
 
@@ -282,7 +282,10 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
 
         // Only add this device if it's in bootloader mode
         // (normal mode devices should be detected via serial ports)
-        if mode == DeviceMode::Bootloader {
+        // Also treat STM32 DFU fallback devices (blank boards) as bootloader
+        let is_stm_dfu = config::is_stm_dfu_device(desc.vendor_id(), desc.product_id());
+        if mode == DeviceMode::Bootloader || (is_stm_dfu && mode == DeviceMode::Unknown) {
+            let mode = DeviceMode::Bootloader;
             let usb_location = format!(
                 "Bus {:03} Device {:03}",
                 device.bus_number(),
@@ -336,7 +339,7 @@ fn read_usb_device_info(usb_serial: &str) -> Option<UsbDeviceInfo> {
             Err(_) => continue,
         };
 
-        if !config::is_attentio_device(desc.vendor_id(), desc.product_id()) {
+        if !config::is_known_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
 
@@ -418,7 +421,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
         .into_iter()
         .filter_map(|port| match port.port_type {
             SerialPortType::UsbPort(ref usb_info)
-                if usb_info.vid == ATTENTIO_VID && usb_info.pid == ATTENTIO_PID =>
+                if config::is_known_device(usb_info.vid, usb_info.pid) =>
             {
                 Some(RawUsbPort {
                     path: port.port_name.clone(),

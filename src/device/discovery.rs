@@ -21,7 +21,7 @@ fn name_cache() -> &'static Mutex<HashMap<String, String>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn cache_remember(serial: &str, name: &str) {
+pub fn cache_remember(serial: &str, name: &str) {
     if let Ok(mut g) = name_cache().lock() {
         g.insert(serial.to_string(), name.to_string());
     }

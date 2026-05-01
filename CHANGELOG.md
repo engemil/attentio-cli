@@ -13,6 +13,17 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-01)
+
+Changed
+
+- **`cache_remember` made public** — `device::discovery::cache_remember` is
+  now `pub` so external consumers (e.g. `attentio-desktop`) can update the
+  last-known device-name cache after a rename without waiting for the next
+  discovery poll.
+
+---
+
 ## [Development] (2026-04-26)
 
 Added

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::{BufRead, IsTerminal, Write};
 use std::sync::{Mutex, OnceLock};
 
 use rusb::UsbContext;
@@ -683,14 +684,63 @@ pub fn select_device(
         None => match devices.len() {
             0 => Err(AttentioError::DeviceNotFound),
             1 => Ok(devices.into_iter().next().unwrap()),
-            _ => {
-                let serials = devices
-                    .iter()
-                    .map(|d| d.serial.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(AttentioError::MultipleDevices { serials })
-            }
+            _ => prompt_device_selection(devices),
         },
+    }
+}
+
+/// Prompt the user to select a device when multiple are connected.
+///
+/// If stdin is a TTY, displays an interactive numbered list and reads the
+/// user's choice. Otherwise, falls back to the `MultipleDevices` error so
+/// scripts and piped invocations don't hang.
+fn prompt_device_selection(
+    devices: Vec<AttentioDevice>,
+) -> Result<AttentioDevice, AttentioError> {
+    let serials = devices
+        .iter()
+        .map(|d| d.serial.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Non-interactive context — keep the existing error behaviour.
+    if !std::io::stdin().is_terminal() {
+        return Err(AttentioError::MultipleDevices { serials });
+    }
+
+    let mut stderr = std::io::stderr();
+
+    // Print the device list to stderr so it doesn't pollute stdout (e.g. --json).
+    writeln!(stderr, "\nMultiple devices found. Select a device:\n").ok();
+    for (i, dev) in devices.iter().enumerate() {
+        let label = match &dev.product {
+            Some(name) => format!("{} ({})", dev.serial, name),
+            None => dev.serial.clone(),
+        };
+        writeln!(stderr, "  [{}] {}", i + 1, label).ok();
+    }
+    writeln!(stderr, "  [0] Cancel").ok();
+    writeln!(stderr).ok();
+
+    // Read choice — loop until we get a valid input.
+    let stdin = std::io::stdin();
+    loop {
+        write!(stderr, "Enter choice [0-{}]: ", devices.len()).ok();
+        stderr.flush().ok();
+
+        let mut input = String::new();
+        if stdin.lock().read_line(&mut input).is_err() || input.is_empty() {
+            return Err(AttentioError::MultipleDevices { serials });
+        }
+
+        match input.trim().parse::<usize>() {
+            Ok(0) => return Err(AttentioError::MultipleDevices { serials }),
+            Ok(n) if n <= devices.len() => {
+                return Ok(devices.into_iter().nth(n - 1).unwrap());
+            }
+            _ => {
+                writeln!(stderr, "Invalid choice. Try again.").ok();
+            }
+        }
     }
 }

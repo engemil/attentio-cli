@@ -197,7 +197,7 @@ The `settings save` and `settings load` commands use a simple JSON file:
 
 | Flag | Description |
 |------|-------------|
-| `-d, --device <#\|serial>` | Target device by index (from `attentio list`) or USB serial number (defaults to only connected device) |
+| `-d, --device <#\|serial>` | Target device by index (from `attentio list`) or USB serial number. Defaults to the only connected device; prompts interactively when multiple devices are found |
 | `--json` | Output results as JSON with `status` field (`OK` or `ERROR`) for scripting/automation |
 | `-v, --verbose` | Enable verbose/debug output |
 

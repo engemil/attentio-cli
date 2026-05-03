@@ -44,11 +44,10 @@ pub async fn execute_release(device: Option<&str>, json: bool) -> Result<()> {
 
 /// Execute the `ping` command — ping the device.
 pub async fn execute_ping(device: Option<&str>, json: bool) -> Result<()> {
-    let start = std::time::Instant::now();
     let mut client = open_client(device).await?;
 
+    let start = std::time::Instant::now();
     client.ping().await.context("failed to ping device")?;
-
     let elapsed = start.elapsed();
 
     if json {

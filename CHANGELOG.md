@@ -15,6 +15,24 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ## [Development] (2026-05-03)
 
+Added
+
+- **Interactive device picker** — when multiple devices are connected and no
+  `--device` flag is given, the CLI now prompts the user to select a device
+  from a numbered list (showing index, serial number, and device name) instead
+  of printing an error. Includes a cancel option. Falls back to the previous
+  error message in non-interactive (piped/scripted) contexts.
+
+Fixed
+
+- **Ping round-trip timing** — `attentio ping` no longer includes device
+  discovery and selection time in the reported round-trip duration. The timer
+  now starts after the device connection is established.
+
+---
+
+## [Development] (2026-05-03)
+
 Fixed
 
 - **Multi-device discovery on Linux** — fixed a bug where multiple connected

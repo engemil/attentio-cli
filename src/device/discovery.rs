@@ -186,27 +186,39 @@ fn detect_device_mode(product: Option<&String>) -> DeviceMode {
 pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
     let mut devices = find_devices_fast()?;
 
-    // Query device_name from each normal-mode device via AP protocol.
-    for device in &mut devices {
+    // Query device_name from all normal-mode devices in parallel via AP protocol.
+    // Each device has its own independent CDC port, so parallel access is safe
+    // and reduces total latency compared to sequential queries.
+    let mut tasks: tokio::task::JoinSet<(usize, Result<String, AttentioError>)> =
+        tokio::task::JoinSet::new();
+
+    for (idx, device) in devices.iter().enumerate() {
         if device.mode != DeviceMode::Normal {
             continue;
         }
         let Some(port_path) = device.ap_port().map(|s| s.to_string()) else {
             continue;
         };
-        match query_device_name(&port_path).await {
+        tasks.spawn(async move { (idx, query_device_name(&port_path).await) });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        let Ok((idx, name_result)) = result else {
+            continue;
+        };
+        match name_result {
             Ok(name) => {
-                debug!("Device {} name: {}", device.serial, name);
-                cache_remember(&device.serial, &name);
-                device.product = Some(name);
+                debug!("Device {} name: {}", devices[idx].serial, name);
+                cache_remember(&devices[idx].serial, &name);
+                devices[idx].product = Some(name);
             }
             Err(e) => {
                 debug!(
-                    "Failed to query device_name for {} on {}: {} — using cached value if any",
-                    device.serial, port_path, e
+                    "Failed to query device_name for {}: {} — using cached value if any",
+                    devices[idx].serial, e
                 );
-                if let Some(cached) = cache_lookup(&device.serial) {
-                    device.product = Some(cached);
+                if let Some(cached) = cache_lookup(&devices[idx].serial) {
+                    devices[idx].product = Some(cached);
                 }
             }
         }
@@ -400,15 +412,97 @@ fn read_usb_device_info(usb_serial: &str) -> Option<UsbDeviceInfo> {
 
 /// Query the `device_name` setting from a device via AP protocol.
 ///
-/// Opens a short-lived connection to the device's AP port, sends a
-/// SETTINGS_GET("device_name") command, and returns the value.
+/// Opens a short-lived connection to the device's AP port, drains any stale
+/// bytes in the receive buffer, sends a SETTINGS_GET("device_name") command,
+/// and returns the value. Retries once on failure with a backoff delay.
 async fn query_device_name(port_path: &str) -> Result<String, AttentioError> {
-    // Brief delay to let CDC ACM link settle.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Brief delay to let CDC ACM link settle after enumeration.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
+    match query_device_name_once(port_path).await {
+        Ok(name) => Ok(name),
+        Err(first_err) => {
+            debug!(
+                "First attempt to read device_name from {} failed: {} — retrying",
+                port_path, first_err
+            );
+            // Backoff before retry
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            query_device_name_once(port_path).await
+        }
+    }
+}
+
+/// Single attempt to query `device_name` from a device.
+///
+/// Opens the port, drains any stale bytes from the receive buffer (leftover
+/// debug prints or previous session data), then sends the AP command.
+async fn query_device_name_once(port_path: &str) -> Result<String, AttentioError> {
     let mut client = ApClient::open(port_path)?;
+
+    // Drain stale bytes from the receive buffer before sending the command.
+    // The firmware may have queued debug prints or leftover data that would
+    // confuse the AP parser.
+    client.drain().await;
+
     let (_key, value) = client.settings_get("device_name").await?;
     Ok(value)
+}
+
+/// Read the USB serial number for a tty device from sysfs (Linux only).
+///
+/// The serial number is stored at `/sys/class/tty/<ttyname>/device/../serial`,
+/// which points to the parent USB device's serial attribute. This is more
+/// reliable than `serialport`'s enumeration, which often returns `None` for
+/// serial_number on Linux.
+#[cfg(target_os = "linux")]
+fn read_serial_from_sysfs(port_path: &str) -> Option<String> {
+    // Extract tty name from path (e.g. "/dev/ttyACM0" -> "ttyACM0")
+    let tty_name = port_path.rsplit('/').next()?;
+    let sysfs_path = format!("/sys/class/tty/{}/device/../serial", tty_name);
+    match std::fs::read_to_string(&sysfs_path) {
+        Ok(s) => {
+            let trimmed = s.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        Err(e) => {
+            debug!(
+                "Failed to read serial from sysfs for {}: {}",
+                tty_name, e
+            );
+            None
+        }
+    }
+}
+
+/// Resolve the USB serial number for a port, using platform-specific methods.
+///
+/// On Linux, `serialport` often returns `serial_number: None`, so we read
+/// the serial from sysfs as a fallback. On other platforms, we rely on
+/// `serialport`'s value (which is typically correct on Windows and macOS).
+fn resolve_port_serial(port_path: &str, serialport_serial: Option<&str>) -> String {
+    // If serialport already gave us a serial, use it
+    if let Some(s) = serialport_serial {
+        if !s.is_empty() {
+            return s.to_string();
+        }
+    }
+
+    // On Linux, try sysfs as fallback
+    #[cfg(target_os = "linux")]
+    if let Some(s) = read_serial_from_sysfs(port_path) {
+        debug!(
+            "Resolved serial from sysfs for {}: {}",
+            port_path, s
+        );
+        return s;
+    }
+
+    "unknown".to_string()
 }
 
 /// Build device list from raw serial port info.
@@ -438,14 +532,14 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
         return Vec::new();
     }
 
-    // Group ports by serial number
+    // Group ports by serial number, resolving via sysfs on Linux when
+    // serialport returns None (which is common on Linux).
     let mut by_serial: HashMap<String, Vec<RawUsbPort>> = HashMap::new();
     for port in attentio_ports {
-        let serial = port
-            .info
-            .serial_number
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
+        let serial = resolve_port_serial(
+            &port.path,
+            port.info.serial_number.as_deref(),
+        );
         by_serial.entry(serial).or_default().push(port);
     }
 

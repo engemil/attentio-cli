@@ -13,6 +13,32 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-03)
+
+Fixed
+
+- **Multi-device discovery on Linux** — fixed a bug where multiple connected
+  AttentioLight-1 devices were merged into a single entry in `attentio list`.
+  The `serialport` crate often returns `serial_number: None` on Linux, causing
+  all ports to be grouped under `"unknown"` in a single device. Added
+  `read_serial_from_sysfs()` fallback that reads the USB serial number from
+  `/sys/class/tty/<tty>/device/../serial`, which the kernel always populates
+  from the device's iSerialNumber descriptor. Each device now correctly
+  appears as a separate entry with its unique 24-char hex serial.
+
+- **Flaky device name reads** — `attentio list` intermittently showed `-` for
+  device names because the AP protocol query failed on the first attempt
+  (stale bytes in the CDC receive buffer or insufficient settle time after
+  enumeration). Three improvements:
+  - **Parallel queries** — device name queries now run concurrently via
+    `tokio::task::JoinSet` instead of sequentially, reducing total latency.
+  - **Stale byte drain** — new `ApClient::drain()` method reads and discards
+    leftover bytes from the CDC receive buffer before sending the AP command.
+  - **Retry with backoff** — on first failure, retries once after a 150ms
+    backoff delay. Settle delay increased from 50ms to 100ms.
+
+---
+
 ## [Development] (2026-05-01)
 
 Changed

@@ -162,6 +162,27 @@ impl ApClient {
         Ok(Self::new(conn))
     }
 
+    /// Drain any stale bytes from the receive buffer.
+    ///
+    /// Reads and discards data for a short period (10ms) to clear leftover
+    /// debug prints or previous session data that might confuse the AP parser.
+    pub async fn drain(&mut self) {
+        let mut buf = [0u8; 256];
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, self.conn.read_raw(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 => {
+                    debug!("Drained {} stale bytes from port", n);
+                }
+                _ => break,
+            }
+        }
+    }
+
     /// Set the response timeout.
     #[allow(dead_code)]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {

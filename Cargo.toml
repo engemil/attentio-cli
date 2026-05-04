@@ -2,7 +2,7 @@
 name = "attentio"
 version = "0.1.0"
 edition = "2021"
-description = "CLI tool for AttentioLight-1 (AL-1) device management"
+description = "CLI tool for Attentio device management"
 license = "MIT"
 
 [lib]

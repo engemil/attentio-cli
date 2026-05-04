@@ -13,6 +13,16 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-04)
+
+Changed
+
+- **Generalized crate description** — `Cargo.toml` description updated from
+  "CLI tool for AttentioLight-1 (AL-1) device management" to "CLI tool for
+  Attentio device management" to reflect broader product naming.
+
+---
+
 ## [Development] (2026-05-03)
 
 Added

@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tokio::sync::broadcast;
 use tracing::debug;
 
 use crate::device::connection::DeviceConnection;
@@ -18,6 +19,15 @@ use super::packet::{
     CMD_POWER_ON, CMD_RELEASE, CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET,
     CMD_SET_BRIGHTNESS, CMD_SET_HSV, CMD_SET_RGB,
 };
+
+/// Events emitted by the AP client monitor tap.
+#[derive(Debug, Clone)]
+pub enum MonitorEvent {
+    /// A command was sent from host to device.
+    Outgoing { cmd: u8, payload: Vec<u8> },
+    /// A response/event was received from device.
+    Incoming(ApResponse),
+}
 
 /// Default timeout for AP command responses.
 const AP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -144,15 +154,19 @@ pub struct ApClient {
     conn: DeviceConnection,
     timeout: Duration,
     claimed: bool,
+    /// Broadcast channel for monitor tap. Lazily created on first subscribe.
+    monitor_tx: broadcast::Sender<MonitorEvent>,
 }
 
 impl ApClient {
     /// Create a new AP client from an open connection.
     pub fn new(conn: DeviceConnection) -> Self {
+        let (monitor_tx, _) = broadcast::channel(256);
         Self {
             conn,
             timeout: AP_RESPONSE_TIMEOUT,
             claimed: false,
+            monitor_tx,
         }
     }
 
@@ -190,6 +204,13 @@ impl ApClient {
         self
     }
 
+    /// Subscribe to a stream of monitor events (outgoing commands and incoming
+    /// responses). Events are best-effort — if the receiver falls behind,
+    /// older events are dropped.
+    pub fn subscribe_monitor(&self) -> broadcast::Receiver<MonitorEvent> {
+        self.monitor_tx.subscribe()
+    }
+
     /// Send an AP command and wait for the response.
     ///
     /// Builds the packet, writes it, then reads bytes from the port and feeds
@@ -209,6 +230,12 @@ impl ApClient {
         );
 
         self.conn.write_raw(&pkt).await?;
+
+        // Broadcast outgoing event (best-effort, ignore if no subscribers).
+        let _ = self.monitor_tx.send(MonitorEvent::Outgoing {
+            cmd,
+            payload: payload.to_vec(),
+        });
 
         // Read response bytes with timeout
         let mut parser = ApParser::new();
@@ -245,6 +272,8 @@ impl ApClient {
                         resp.cmd,
                         resp.payload.len()
                     );
+                    // Broadcast incoming event (best-effort).
+                    let _ = self.monitor_tx.send(MonitorEvent::Incoming(resp.clone()));
                     return Ok(resp);
                 }
             }

@@ -13,6 +13,28 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-07)
+
+Added
+
+- **AP client monitor broadcast channel** — `ApClient` now owns a
+  `tokio::sync::broadcast::Sender<MonitorEvent>` and sends two event types:
+  `Outgoing { cmd, payload }` when a command is sent and `Incoming(ApResponse)`
+  when a response (or event) is received. The channel is lazily created (256
+  capacity) and shared with monitor consumers via `subscribe_monitor()`, which
+  returns a `broadcast::Receiver`. Enables `attentio-desktop`'s Monitor page to
+  tap into the same `ApClient` instance used by all device commands.
+
+Changed
+
+- **Centralised `log_level_name()`** — the human-readable log level name
+  function (NONE / ERROR / WARN / INFO / DEBUG) has been moved from
+  `cli/commands/loglevel.rs` into `monitor/format.rs` so it can be shared by
+  both the CLI and `attentio-desktop`'s Rust bridge. `loglevel.rs` now
+  delegates to `monitor::format::log_level_name()`.
+
+---
+
 ## [Development] (2026-05-04)
 
 Changed

@@ -3,6 +3,7 @@ use serde_json::json;
 
 use crate::cli::LoglevelAction;
 use crate::json_output;
+use crate::monitor::format::log_level_name;
 use crate::protocol::open_client;
 
 /// Log level names indexed by level value (0-4).
@@ -10,7 +11,7 @@ pub const LEVEL_NAMES: [&str; 5] = ["NONE", "ERROR", "WARN", "INFO", "DEBUG"];
 
 /// Get the name for a log level value.
 pub fn level_name(level: u8) -> &'static str {
-    LEVEL_NAMES.get(level as usize).unwrap_or(&"UNKNOWN")
+    log_level_name(level)
 }
 
 pub async fn execute(action: &LoglevelAction, device: Option<&str>, json: bool) -> Result<()> {

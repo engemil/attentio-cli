@@ -1,15 +1,37 @@
 //! High-level AP protocol client.
 //!
 //! Wraps a [`DeviceConnection`] and provides typed methods for each AP command.
-//! The protocol is synchronous: send one command, receive one response.
+//! The protocol is mostly synchronous: send one command, receive one response.
+//! Unsolicited device-to-host events (see [`EVENT_CMD_RANGE`]) are also
+//! possible — those are routed to the monitor broadcast channel rather than
+//! to a command waiter.
+//!
+//! ## Architecture
+//!
+//! On construction, [`ApClient`] spawns a permanent background reader task
+//! that owns the read half of the underlying serial connection. The task runs
+//! an [`ApParser`] continuously and dispatches each parsed [`ApResponse`]:
+//!
+//! - **Events** ([`CmdClass::Event`]): broadcast on `monitor_tx` only. Multiple
+//!   subscribers (CLI/desktop monitor view) receive each event.
+//! - **Command responses** (everything else): delivered to the in-flight
+//!   `send_command` waiter via a oneshot channel, AND broadcast on `monitor_tx`
+//!   so monitor views see the response too.
+//!
+//! [`send_command`](ApClient::send_command) acquires a per-client mutex (so
+//! commands serialize on the wire), registers a oneshot waiter, writes the
+//! packet, and awaits the oneshot with a timeout. The reader task is the only
+//! place that reads from the serial port.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::sync::broadcast;
-use tracing::debug;
+use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::task::JoinHandle;
+use tracing::{debug, warn};
 
-use crate::device::connection::DeviceConnection;
+use crate::device::connection::{ConnReader, ConnWriter, DeviceConnection, FdGuard};
 use crate::device::discovery::resolve_device;
 use crate::error::AttentioError;
 
@@ -150,23 +172,69 @@ pub async fn open_client_for_device(
 }
 
 /// AP protocol client wrapping a serial connection.
+///
+/// Internally owns:
+/// - A permanent reader task that parses incoming bytes from CDC1.
+/// - A writer (mutexed) for outgoing command packets.
+/// - A registry of in-flight command waiters (oneshot channels).
+/// - A broadcast tap so monitor views can observe all traffic.
 pub struct ApClient {
-    conn: DeviceConnection,
-    timeout: Duration,
-    claimed: bool,
-    /// Broadcast channel for monitor tap. Lazily created on first subscribe.
+    /// Serializes command writes and waiter registration.
+    writer: Arc<Mutex<ConnWriter>>,
+    /// Holds the oneshot sender of the currently in-flight command, if any.
+    /// Used by the reader task to deliver a response to the awaiter.
+    /// Wrapped in `std::sync::Mutex` (sync) because it's only briefly held to
+    /// take/place a `Sender` — never across `.await`.
+    pending: Arc<std::sync::Mutex<Option<oneshot::Sender<ApResponse>>>>,
+    /// Broadcast channel for monitor tap.
     monitor_tx: broadcast::Sender<MonitorEvent>,
+    /// Per-client command timeout.
+    timeout: Duration,
+    /// Whether `claim()` has succeeded in this session.
+    claimed: bool,
+    /// Reader task handle — aborted on drop.
+    reader_task: Option<JoinHandle<()>>,
+    /// Holds the fd ownership for TIOCNXCL on drop. Must outlive the reader
+    /// task and the writer.
+    _fd_guard: Arc<FdGuard>,
+}
+
+impl Drop for ApClient {
+    fn drop(&mut self) {
+        if let Some(handle) = self.reader_task.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl ApClient {
     /// Create a new AP client from an open connection.
+    ///
+    /// Spawns the permanent reader task and returns immediately.
     pub fn new(conn: DeviceConnection) -> Self {
+        let (reader, writer, fd_guard) = conn.into_parts();
         let (monitor_tx, _) = broadcast::channel(256);
+        let pending: Arc<std::sync::Mutex<Option<oneshot::Sender<ApResponse>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let fd_guard = Arc::new(fd_guard);
+
+        let reader_task = tokio::spawn(reader_loop(
+            reader,
+            monitor_tx.clone(),
+            pending.clone(),
+            // Hold a clone of the fd guard inside the task so the fd is not
+            // released until the task itself drops.
+            fd_guard.clone(),
+        ));
+
         Self {
-            conn,
+            writer: Arc::new(Mutex::new(writer)),
+            pending,
+            monitor_tx,
             timeout: AP_RESPONSE_TIMEOUT,
             claimed: false,
-            monitor_tx,
+            reader_task: Some(reader_task),
+            _fd_guard: fd_guard,
         }
     }
 
@@ -178,23 +246,14 @@ impl ApClient {
 
     /// Drain any stale bytes from the receive buffer.
     ///
-    /// Reads and discards data for a short period (10ms) to clear leftover
-    /// debug prints or previous session data that might confuse the AP parser.
+    /// With the permanent reader architecture, "draining" is implicit: the
+    /// reader task is already consuming bytes continuously and routing parsed
+    /// frames either to the broadcast (for events) or to nothing (when no
+    /// command is in flight, command-shaped responses just get logged and
+    /// dropped). This method is kept for API compatibility but is now a no-op
+    /// after a brief settle delay.
     pub async fn drain(&mut self) {
-        let mut buf = [0u8; 256];
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match tokio::time::timeout(remaining, self.conn.read_raw(&mut buf)).await {
-                Ok(Ok(n)) if n > 0 => {
-                    debug!("Drained {} stale bytes from port", n);
-                }
-                _ => break,
-            }
-        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     /// Set the response timeout.
@@ -205,17 +264,19 @@ impl ApClient {
     }
 
     /// Subscribe to a stream of monitor events (outgoing commands and incoming
-    /// responses). Events are best-effort — if the receiver falls behind,
-    /// older events are dropped.
+    /// responses/events). Events are best-effort — if the receiver falls
+    /// behind, older events are dropped.
     pub fn subscribe_monitor(&self) -> broadcast::Receiver<MonitorEvent> {
         self.monitor_tx.subscribe()
     }
 
     /// Send an AP command and wait for the response.
     ///
-    /// Builds the packet, writes it, then reads bytes from the port and feeds
-    /// them into the AP parser state machine until a complete response is
-    /// received or the timeout expires.
+    /// Builds the packet, registers a one-shot waiter, writes the packet, and
+    /// awaits delivery from the permanent reader task. Unsolicited events
+    /// (cmd 0x80–0x8F) are filtered out in the reader and never delivered to
+    /// command waiters, so this method always returns a command-shaped
+    /// response (or a timeout / IO error).
     pub async fn send_command(
         &mut self,
         cmd: u8,
@@ -229,59 +290,82 @@ impl ApClient {
             pkt.len()
         );
 
-        self.conn.write_raw(&pkt).await?;
+        // Register the oneshot waiter BEFORE writing, so we can't miss a
+        // very-fast response. Hold the writer mutex throughout to serialize
+        // commands on the wire.
+        let mut writer = self.writer.lock().await;
 
-        // Broadcast outgoing event (best-effort, ignore if no subscribers).
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self
+                .pending
+                .lock()
+                .expect("ApClient pending mutex poisoned");
+            // If a previous waiter was somehow left in place (shouldn't happen
+            // because writer mutex serializes us), drop it — its caller already
+            // returned with a timeout.
+            *pending = Some(tx);
+        }
+
+        // Best-effort outgoing broadcast (after registration so the order in
+        // monitor matches the wire order).
         let _ = self.monitor_tx.send(MonitorEvent::Outgoing {
             cmd,
             payload: payload.to_vec(),
         });
 
-        // Read response bytes with timeout
-        let mut parser = ApParser::new();
-        let mut buf = [0u8; 256];
-        let deadline = tokio::time::Instant::now() + self.timeout;
+        if let Err(e) = writer.write_raw(&pkt).await {
+            // Clean up the waiter we just registered.
+            let mut pending = self
+                .pending
+                .lock()
+                .expect("ApClient pending mutex poisoned");
+            *pending = None;
+            return Err(e);
+        }
 
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(AttentioError::Timeout {
-                    seconds: self.timeout.as_secs(),
-                });
+        // Hold the writer lock until we've awaited the response so that no
+        // other command can interleave its waiter registration. (Commands
+        // are strictly request/response per the AP protocol.)
+        let result = tokio::time::timeout(self.timeout, rx).await;
+        drop(writer);
+
+        match result {
+            Ok(Ok(resp)) => {
+                debug!(
+                    "AP recv: cmd=0x{:02X} payload_len={}",
+                    resp.cmd,
+                    resp.payload.len()
+                );
+                Ok(resp)
             }
-
-            let n = match tokio::time::timeout(remaining, self.conn.read_raw(&mut buf)).await {
-                Ok(Ok(0)) => {
-                    return Err(AttentioError::Protocol {
-                        message: "connection closed while waiting for AP response".to_string(),
-                    });
-                }
-                Ok(Ok(n)) => n,
-                Ok(Err(e)) => return Err(e),
-                Err(_) => {
-                    return Err(AttentioError::Timeout {
-                        seconds: self.timeout.as_secs(),
-                    });
-                }
-            };
-
-            for &byte in &buf[..n] {
-                if let Some(resp) = parser.feed(byte) {
-                    debug!(
-                        "AP recv: cmd=0x{:02X} payload_len={}",
-                        resp.cmd,
-                        resp.payload.len()
-                    );
-                    // Broadcast incoming event (best-effort).
-                    let _ = self.monitor_tx.send(MonitorEvent::Incoming(resp.clone()));
-                    return Ok(resp);
-                }
+            Ok(Err(_canceled)) => {
+                // Sender dropped without sending — reader task likely exited.
+                Err(AttentioError::Protocol {
+                    message: "connection closed while waiting for AP response".to_string(),
+                })
+            }
+            Err(_elapsed) => {
+                // Timeout — clear the waiter so the reader doesn't try to
+                // deliver into a dead oneshot.
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .expect("ApClient pending mutex poisoned");
+                *pending = None;
+                Err(AttentioError::Timeout {
+                    seconds: self.timeout.as_secs(),
+                })
             }
         }
     }
 
     /// Send a command and return the payload on success, or an error with a
     /// human-readable message on failure.
+    ///
+    /// Note: with the permanent reader architecture, unsolicited events
+    /// (cmd 0x80–0x8F) are filtered out before reaching `send_command`, so
+    /// this function will never observe an event response.
     async fn send_command_ok(&mut self, cmd: u8, payload: &[u8]) -> Result<Vec<u8>, AttentioError> {
         let resp = self.send_command(cmd, payload).await?;
 
@@ -294,6 +378,15 @@ impl ApClient {
                     "device returned error 0x{:02X}: {}",
                     code,
                     ap_error_name(code)
+                ),
+            })
+        } else if resp.is_event() {
+            // Should never happen — the reader task routes events to the
+            // broadcast and never to command waiters. Treat as a protocol bug.
+            Err(AttentioError::Protocol {
+                message: format!(
+                    "internal error: unsolicited event 0x{:02X} delivered to command waiter",
+                    resp.cmd
                 ),
             })
         } else {
@@ -547,6 +640,79 @@ impl ApClient {
     pub async fn log_set_level(&mut self, level: u8) -> Result<(), AttentioError> {
         self.send_command_ok(CMD_LOG_SET_LEVEL, &[level]).await?;
         Ok(())
+    }
+}
+
+// ── Permanent reader task ────────────────────────────────────────────────────
+
+/// Background task: continuously reads bytes from the AP port, parses them,
+/// and dispatches each parsed [`ApResponse`].
+///
+/// - **Events** (cmd 0x80–0x8F) are broadcast via `monitor_tx` only.
+/// - **Command responses** are delivered to the in-flight command waiter (if
+///   any) via the oneshot stored in `pending`, AND broadcast via `monitor_tx`
+///   so monitor views see them too.
+///
+/// Exits cleanly when the underlying serial connection returns 0 bytes
+/// (EOF / device unplugged) or an I/O error.
+async fn reader_loop(
+    mut reader: ConnReader,
+    monitor_tx: broadcast::Sender<MonitorEvent>,
+    pending: Arc<std::sync::Mutex<Option<oneshot::Sender<ApResponse>>>>,
+    _fd_guard: Arc<FdGuard>,
+) {
+    let mut parser = ApParser::new();
+    let mut buf = [0u8; 256];
+
+    loop {
+        let n = match reader.read_raw(&mut buf).await {
+            Ok(0) => {
+                debug!("AP reader: connection closed (EOF)");
+                return;
+            }
+            Ok(n) => n,
+            Err(e) => {
+                debug!("AP reader: read error: {}", e);
+                return;
+            }
+        };
+
+        for &byte in &buf[..n] {
+            if let Some(resp) = parser.feed(byte) {
+                // Always broadcast for monitor views.
+                let _ = monitor_tx.send(MonitorEvent::Incoming(resp.clone()));
+
+                if resp.is_event() {
+                    // Unsolicited event — do NOT deliver to a command waiter.
+                    debug!(
+                        "AP event: cmd=0x{:02X} payload_len={}",
+                        resp.cmd,
+                        resp.payload.len()
+                    );
+                } else {
+                    // Command-shaped response (OK 0x00, ERROR 0xFF, or any
+                    // other non-event cmd echo). Deliver to the in-flight
+                    // command waiter, if any.
+                    let waiter = {
+                        let mut pending_guard =
+                            pending.lock().expect("ApClient pending mutex poisoned");
+                        pending_guard.take()
+                    };
+                    if let Some(tx) = waiter {
+                        if tx.send(resp).is_err() {
+                            debug!(
+                                "AP reader: command waiter dropped before response delivered"
+                            );
+                        }
+                    } else {
+                        warn!(
+                            "AP reader: received response cmd=0x{:02X} with no in-flight command waiter",
+                            resp.cmd
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 

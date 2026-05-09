@@ -16,6 +16,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct DeviceConnection {
     /// Raw file descriptor — retained so Drop can clear TIOCEXCL before close.
     fd: RawFd,
+    /// True while the fd is owned by this struct. If `into_parts()` was called,
+    /// this becomes false and Drop skips TIOCNXCL — the [`FdGuard`] returned by
+    /// `into_parts()` takes over ownership.
+    owns_fd: bool,
     reader: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
     writer: tokio::io::WriteHalf<tokio_serial::SerialStream>,
     timeout: Duration,
@@ -23,6 +27,11 @@ pub struct DeviceConnection {
 
 impl Drop for DeviceConnection {
     fn drop(&mut self) {
+        if !self.owns_fd {
+            // Halves and the fd guard were extracted via into_parts(); the
+            // FdGuard is responsible for clearing TIOCNXCL when it drops.
+            return;
+        }
         // Clear exclusive mode so the port is immediately available to the next
         // opener. The kernel releases TIOCEXCL on close() anyway, but doing it
         // explicitly here means the port is unlocked before the fd is fully
@@ -32,6 +41,56 @@ impl Drop for DeviceConnection {
             libc::ioctl(self.fd, libc::TIOCNXCL);
         }
         debug!("Serial port released (TIOCNXCL cleared)");
+    }
+}
+
+/// Read half of a split [`DeviceConnection`].
+///
+/// Owned by a permanent reader task in [`crate::protocol::client::ApClient`]
+/// when `into_parts()` is used; can also be used directly by short-lived
+/// readers (e.g. CLI monitor).
+pub struct ConnReader {
+    inner: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
+}
+
+impl ConnReader {
+    /// Read raw bytes from the port into `buf`.
+    ///
+    /// Returns the number of bytes read.
+    pub async fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize, AttentioError> {
+        self.inner.read(buf).await.map_err(AttentioError::Io)
+    }
+}
+
+/// Write half of a split [`DeviceConnection`].
+pub struct ConnWriter {
+    inner: tokio::io::WriteHalf<tokio_serial::SerialStream>,
+}
+
+impl ConnWriter {
+    /// Write raw bytes to the port and flush.
+    pub async fn write_raw(&mut self, data: &[u8]) -> Result<(), AttentioError> {
+        self.inner.write_all(data).await.map_err(AttentioError::Io)?;
+        self.inner.flush().await.map_err(AttentioError::Io)?;
+        Ok(())
+    }
+}
+
+/// Owns the raw fd of a split [`DeviceConnection`] and clears TIOCEXCL on drop.
+///
+/// Must outlive any [`ConnReader`] / [`ConnWriter`] derived from the same
+/// connection (the halves use the fd via tokio internally and become invalid
+/// once the fd is closed).
+pub struct FdGuard {
+    fd: RawFd,
+}
+
+impl Drop for FdGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::ioctl(self.fd, libc::TIOCNXCL);
+        }
+        debug!("Serial port released (TIOCNXCL cleared via FdGuard)");
     }
 }
 
@@ -50,6 +109,7 @@ impl DeviceConnection {
 
         Ok(Self {
             fd,
+            owns_fd: true,
             reader: BufReader::new(read_half),
             writer: write_half,
             timeout: DEFAULT_TIMEOUT,
@@ -105,6 +165,34 @@ impl DeviceConnection {
     /// consume response bytes from the device.
     pub async fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize, AttentioError> {
         self.reader.read(buf).await.map_err(AttentioError::Io)
+    }
+
+    /// Split the connection into independent reader, writer, and fd guard.
+    ///
+    /// The returned [`ConnReader`] and [`ConnWriter`] can be used concurrently
+    /// from different tasks. The [`FdGuard`] takes over the responsibility of
+    /// clearing `TIOCEXCL` on drop and **must** be kept alive at least as long
+    /// as either half — when the guard drops, the fd is no longer protected
+    /// from races with re-openers.
+    pub fn into_parts(mut self) -> (ConnReader, ConnWriter, FdGuard) {
+        // Disarm Drop so it doesn't fire TIOCNXCL on the fd we're handing off.
+        self.owns_fd = false;
+        let fd = self.fd;
+
+        // Move the halves out. We can't pattern-destructure self because of the
+        // Drop impl, so we use ManuallyDrop-style replacement via std::ptr::read.
+        // Safe: self is owned by us and won't be used again after this function
+        // returns. We forget self afterwards so its Drop doesn't run twice on
+        // the moved-out fields.
+        let reader = unsafe { std::ptr::read(&self.reader) };
+        let writer = unsafe { std::ptr::read(&self.writer) };
+        std::mem::forget(self);
+
+        (
+            ConnReader { inner: reader },
+            ConnWriter { inner: writer },
+            FdGuard { fd },
+        )
     }
 }
 

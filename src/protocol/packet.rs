@@ -82,6 +82,51 @@ pub fn ap_error_name(code: u8) -> &'static str {
     }
 }
 
+// ── Command-id classification ────────────────────────────────────────────────
+
+/// Inclusive range of host-to-device request commands (`AP_CMD_*`).
+///
+/// Covers the session/power/LED/query/settings/log/DFU sub-blocks
+/// (`0x00–0x7F`) per the firmware's command-id layout in
+/// `fw_al1mb1/app/attentio_protocol/attentio_protocol.h`.
+pub const REQUEST_CMD_RANGE: std::ops::RangeInclusive<u8> = 0x00..=0x7F;
+
+/// Inclusive range of device-to-host event commands (`AP_CMD_EVT_*`).
+///
+/// Mirrors the firmware's `0x80–0x8F` event block.
+pub const EVENT_CMD_RANGE: std::ops::RangeInclusive<u8> = 0x80..=0x8F;
+
+/// High-level classification of an AP command byte.
+///
+/// Derived from the firmware's documented command-id layout:
+/// - `0x00–0x7F` → request (host → device)
+/// - `0x80–0x8F` → event (device → host, unsolicited)
+/// - `0xF0` ([`CMD_OK`]) and `0xF1` ([`CMD_ERROR`]) → response (device → host)
+/// - everything else → reserved / unknown
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmdClass {
+    /// Host→device request.
+    Request,
+    /// Device→host response to a request (`CMD_OK` / `CMD_ERROR`).
+    Response,
+    /// Device→host unsolicited event (cmd in [`EVENT_CMD_RANGE`]).
+    Event,
+    /// Reserved / not assigned.
+    Unknown,
+}
+
+impl CmdClass {
+    /// Classify a raw command byte by the firmware's documented layout.
+    pub const fn of(cmd: u8) -> Self {
+        match cmd {
+            CMD_OK | CMD_ERROR => Self::Response,
+            0x80..=0x8F => Self::Event,
+            0x00..=0x7F => Self::Request,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 // ── Packet building ──────────────────────────────────────────────────────────
 
 /// Build a complete AP packet: `[SYNC][LEN][CMD][payload...][CRC8]`.
@@ -140,6 +185,12 @@ impl ApResponse {
         } else {
             None
         }
+    }
+
+    /// Returns `true` if this is an unsolicited device-to-host event
+    /// (cmd in [`EVENT_CMD_RANGE`]).
+    pub fn is_event(&self) -> bool {
+        matches!(CmdClass::of(self.cmd), CmdClass::Event)
     }
 }
 
@@ -331,5 +382,82 @@ mod tests {
             result.is_none(),
             "CRC mismatch should not produce a response"
         );
+    }
+
+    #[test]
+    fn test_cmd_class_known_commands() {
+        use CmdClass::*;
+        // Requests
+        assert_eq!(CmdClass::of(CMD_CLAIM), Request);
+        assert_eq!(CmdClass::of(CMD_RELEASE), Request);
+        assert_eq!(CmdClass::of(CMD_PING), Request);
+        assert_eq!(CmdClass::of(CMD_POWER_ON), Request);
+        assert_eq!(CmdClass::of(CMD_SET_RGB), Request);
+        assert_eq!(CmdClass::of(CMD_GET_STATUS), Request);
+        assert_eq!(CmdClass::of(CMD_SETTINGS_LIST), Request);
+        assert_eq!(CmdClass::of(CMD_LOG_GET_LEVEL), Request);
+        assert_eq!(CmdClass::of(CMD_DFU_ENTER), Request);
+        // Events
+        assert_eq!(CmdClass::of(CMD_EVT_BUTTON), Event);
+        assert_eq!(CmdClass::of(CMD_EVT_STATE_CHANGE), Event);
+        assert_eq!(CmdClass::of(CMD_EVT_SESSION_END), Event);
+        // Responses
+        assert_eq!(CmdClass::of(CMD_OK), Response);
+        assert_eq!(CmdClass::of(CMD_ERROR), Response);
+    }
+
+    #[test]
+    fn test_cmd_class_boundaries() {
+        use CmdClass::*;
+        assert_eq!(CmdClass::of(0x00), Request);
+        assert_eq!(CmdClass::of(0x7F), Request);
+        assert_eq!(CmdClass::of(0x80), Event);
+        assert_eq!(CmdClass::of(0x8F), Event);
+        assert_eq!(CmdClass::of(0x90), Unknown);
+        assert_eq!(CmdClass::of(0xEF), Unknown);
+        assert_eq!(CmdClass::of(0xF0), Response); // CMD_OK
+        assert_eq!(CmdClass::of(0xF1), Response); // CMD_ERROR
+        assert_eq!(CmdClass::of(0xF2), Unknown);
+        assert_eq!(CmdClass::of(0xFF), Unknown);
+    }
+
+    #[test]
+    fn test_apresponse_is_event() {
+        let evt = ApResponse {
+            cmd: CMD_EVT_BUTTON,
+            payload: vec![0x01],
+        };
+        assert!(evt.is_event());
+        assert!(!evt.is_ok());
+        assert!(!evt.is_error());
+
+        let ok = ApResponse {
+            cmd: CMD_OK,
+            payload: vec![],
+        };
+        assert!(!ok.is_event());
+
+        let err = ApResponse {
+            cmd: CMD_ERROR,
+            payload: vec![AP_ERR_INVALID_CMD],
+        };
+        assert!(!err.is_event());
+    }
+
+    #[test]
+    fn test_event_cmd_range_matches_constants() {
+        assert!(EVENT_CMD_RANGE.contains(&CMD_EVT_BUTTON));
+        assert!(EVENT_CMD_RANGE.contains(&CMD_EVT_STATE_CHANGE));
+        assert!(EVENT_CMD_RANGE.contains(&CMD_EVT_SESSION_END));
+        assert_eq!(*EVENT_CMD_RANGE.start(), 0x80);
+        assert_eq!(*EVENT_CMD_RANGE.end(), 0x8F);
+    }
+
+    #[test]
+    fn test_request_cmd_range_bounds() {
+        assert_eq!(*REQUEST_CMD_RANGE.start(), 0x00);
+        assert_eq!(*REQUEST_CMD_RANGE.end(), 0x7F);
+        assert!(REQUEST_CMD_RANGE.contains(&CMD_CLAIM));
+        assert!(REQUEST_CMD_RANGE.contains(&CMD_DFU_ENTER));
     }
 }

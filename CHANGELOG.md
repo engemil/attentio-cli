@@ -13,6 +13,79 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-09)
+
+Added
+
+- **Permanent CDC1 reader task in `ApClient`** — `ApClient::new` now spawns a
+  background reader task that owns the read half of the AP serial connection
+  and runs an `ApParser` continuously. Parsed `ApResponse` frames are
+  dispatched as follows:
+  - **Events** (cmd in `EVENT_CMD_RANGE`, 0x80–0x8F) are broadcast on
+    `monitor_tx` only — they never reach `send_command` waiters.
+  - **Command responses** (everything else) are delivered to the in-flight
+    command waiter via a oneshot channel and also broadcast for monitor views.
+
+  This fixes the long-standing race where an `EVT_BUTTON` arriving between a
+  CLI command write and the response read would either be misinterpreted as
+  the response (causing "unexpected response command" errors in the desktop
+  app) or stall the next command. Public `ApClient` API is unchanged;
+  `drain()` is kept for compatibility but is now a brief settle delay no-op
+  (the reader is always draining).
+
+- **`DeviceConnection::into_parts()`** — splits a connection into a
+  `ConnReader`, `ConnWriter`, and `FdGuard`. The `FdGuard` takes over the
+  responsibility of clearing `TIOCEXCL` on drop (`DeviceConnection`'s own
+  `Drop` is disarmed via an `owns_fd` flag), so the read and write halves can
+  be moved into independent tasks while the port is still released cleanly
+  when the last guard drops. Used by `ApClient` to give the reader task
+  exclusive ownership of the read half.
+
+- **`CmdClass` enum and `EVENT_CMD_RANGE` / `REQUEST_CMD_RANGE` constants in
+  `protocol::packet`** — single source of truth for AP command-byte
+  classification, mirroring the firmware's documented layout (0x00–0x7F
+  request, 0x80–0x8F event, 0xF0/0xF1 response). New `ApResponse::is_event()`
+  method built on top. Replaces the magic literal `matches!(cmd, 0x80..=0x8F)`
+  that lived in `client.rs`. Adding new event ids in 0x80–0x8F or new
+  requests in 0x00–0x7F now requires zero classification-code changes. Five
+  unit tests cover known commands, range boundaries, and consistency.
+
+Changed
+
+- **DFU device selection now goes through `select_device`** — `attentio dfu
+  <firmware.bin>` previously had its own ad-hoc target-resolution logic
+  (auto-pick a lone bootloader; fall back to "first VID/PID match" inside
+  `dfu-libusb`). It now resolves the target up-front via the same
+  `select_device(devices, --device)` helper used by every other command,
+  guaranteeing a concrete USB serial before any `rusb`/`dfu-libusb` call and
+  removing the unfiltered `DfuLibusb::open(VID, PID, ...)` fallback that could
+  grab the wrong board when multiple devices were connected. Added an
+  explicit "unknown serial" guard and clearer per-mode messages
+  (Bootloader / Normal / Unknown).
+
+- **`flash_dfu_device`, `flash_dfu_device_inner`, `reset_dfu_device`,
+  `wait_for_dfu_device_sync`, `find_matching_attentio_usb_device`,
+  `open_dfu_by_serial`** — all six DFU helpers now take `serial: &str`
+  instead of `Option<&str>`. The "no serial → match anything" path has been
+  removed entirely.
+
+- **DFU diagnostics** — `find_matching_attentio_usb_device` now logs counts
+  of VID/PID matches, `device.open()` failures, and serial-read failures at
+  `debug` level, making it easier to diagnose udev / permission problems
+  when the target serial cannot be reached.
+
+Fixed
+
+- **Mid-command `EVT_BUTTON` no longer corrupts command responses** — when
+  the device sent an `EVT_BUTTON` (0x80) or other asynchronous event while
+  the CLI/desktop client was waiting for a command response,
+  `send_command_ok` returned an "unexpected response command" error
+  ("Fail to post message to Dart" in the desktop app). Events are now
+  filtered out by the permanent reader task and routed to the monitor
+  broadcast only; command waiters always see a real `OK` / `ERROR` response.
+
+---
+
 ## [Development] (2026-05-07)
 
 Added

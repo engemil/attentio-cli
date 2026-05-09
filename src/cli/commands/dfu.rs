@@ -9,7 +9,9 @@ use tracing::{debug, info, warn};
 
 use crate::device::config;
 use crate::device::connection::DeviceConnection;
-use crate::device::discovery::{find_devices, find_devices_fast, resolve_device, DeviceMode};
+use crate::device::discovery::{
+    find_devices, find_devices_fast, resolve_device, select_device, DeviceMode,
+};
 use crate::json_output;
 use crate::protocol::packet::{build_packet, CMD_DFU_ENTER};
 
@@ -337,48 +339,58 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
     let header = FirmwareHeader::parse(&firmware_data)?;
     header.validate(&firmware_data)?;
 
-    // ── Step 2: Ensure device is in bootloader mode ─────────────────────────
+    // ── Step 2: Resolve target device and ensure it's in bootloader mode ────
 
+    // Enumerate all connected Attentio devices (Normal + Bootloader). We resolve
+    // the target up-front so we always have a concrete USB serial number before
+    // any DFU/libusb call. Without this, dfu_libusb would scan all VID:PID
+    // matches and may grab the wrong device when multiple boards are plugged in.
     let devices = find_devices().await.unwrap_or_default();
+    if devices.is_empty() {
+        anyhow::bail!(
+            "no Attentio device found — connect a device and try again\n\
+             Hint: if the device is in bootloader mode but not detected, \
+             check USB permissions (udev rules)"
+        );
+    }
 
-    // Determine the target device serial for filtering.
-    // If --device was given, use it. Otherwise try to find the serial from
-    // available devices (bootloader or normal).
-    let target_serial: Option<String> = if let Some(s) = device {
-        Some(s.to_string())
-    } else {
-        // If there's exactly one device total, use its serial
-        if devices.len() == 1 && devices[0].serial != "unknown" {
-            Some(devices[0].serial.clone())
-        } else {
-            None
-        }
-    };
+    // select_device handles: index ("2"), exact serial, partial serial; auto-picks
+    // when only one device is present; prompts when multiple are present and no
+    // --device flag was given. The user explicitly opted for "always prompt"
+    // when ambiguous instead of any auto-pick heuristic.
+    let resolved = select_device(devices, device).context("failed to select target device")?;
 
-    let has_bootloader = devices.iter().any(|d| {
-        d.mode == DeviceMode::Bootloader && target_serial.as_deref().is_none_or(|s| d.serial == s)
-    });
+    if resolved.serial == "unknown" {
+        anyhow::bail!(
+            "cannot DFU device with unknown USB serial — descriptor read failed; \
+             check USB permissions (udev rules) or replug the device"
+        );
+    }
 
-    if !has_bootloader {
-        // Try to find a normal-mode device and auto-enter DFU
-        let normal_devices: Vec<_> = devices
-            .iter()
-            .filter(|d| d.mode == DeviceMode::Normal)
-            .collect();
+    let target_serial = resolved.serial.clone();
 
-        if normal_devices.is_empty() {
-            anyhow::bail!(
-                "no Attentio device found — connect a device and try again\n\
-                 Hint: if the device is in bootloader mode but not detected, \
-                 check USB permissions (udev rules)"
+    match resolved.mode {
+        DeviceMode::Bootloader => {
+            eprintln!(
+                "Selected device is already in bootloader mode (serial {}).",
+                target_serial
             );
         }
-
-        eprintln!("Device is in normal mode — entering DFU bootloader automatically...");
-        execute_enter_internal(device).await?;
-        eprintln!("Device is now in bootloader mode.");
-    } else {
-        eprintln!("Device detected in bootloader mode.");
+        DeviceMode::Normal => {
+            eprintln!(
+                "Selected device (serial {}) is in normal mode — entering DFU bootloader...",
+                target_serial
+            );
+            execute_enter_internal(Some(&target_serial)).await?;
+            eprintln!("Device is now in bootloader mode.");
+        }
+        DeviceMode::Unknown => {
+            anyhow::bail!(
+                "selected device (serial {}) is in unknown mode — \
+                 cannot start DFU from this state",
+                target_serial
+            );
+        }
     }
 
     // ── Step 3: Flash firmware via DFU ──────────────────────────────────────
@@ -389,7 +401,7 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
     // DfuSync is !Send, so we must run it on the current thread via spawn_blocking
     // with a dedicated rusb context. We move the firmware data into the closure.
     let flash_result = tokio::task::spawn_blocking(move || {
-        flash_dfu_device(&firmware_data, firmware_len, serial_for_flash.as_deref())
+        flash_dfu_device(&firmware_data, firmware_len, &serial_for_flash)
     })
     .await
     .context("DFU flash task panicked")?;
@@ -402,7 +414,7 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
     tokio::time::sleep(POST_REBOOT_DELAY).await;
     wait_for_device_mode(
         DeviceMode::Normal,
-        target_serial.as_deref(),
+        Some(&target_serial),
         POST_FLASH_TIMEOUT,
         false,
     )
@@ -420,7 +432,7 @@ fn open_dfu_by_serial<C: rusb::UsbContext>(
     target_serial: &str,
 ) -> Result<dfu_libusb::Dfu<C>> {
     if let Some((device, _desc, handle)) =
-        find_matching_attentio_usb_device(context, Some(target_serial))?
+        find_matching_attentio_usb_device(context, target_serial)?
     {
         debug!("Found DFU device with serial {}", target_serial);
         return dfu_libusb::DfuLibusb::from_usb_device(device, handle, DFU_IFACE, DFU_ALT)
@@ -444,8 +456,8 @@ fn open_dfu_by_serial<C: rusb::UsbContext>(
 /// Synchronous DFU flash using dfu-libusb.
 ///
 /// This runs on a blocking thread (via `spawn_blocking`) because `DfuSync` is `!Send`.
-/// If `serial` is provided, opens the specific device with that USB serial number.
-fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize, serial: Option<&str>) -> Result<()> {
+/// Always opens the specific device with the given USB serial number.
+fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize, serial: &str) -> Result<()> {
     // Try to flash; if it fails due to invalid state, reset USB and retry once.
     match flash_dfu_device_inner(firmware_data, firmware_len, serial) {
         Ok(()) => Ok(()),
@@ -466,8 +478,8 @@ fn flash_dfu_device(firmware_data: &[u8], firmware_len: usize, serial: Option<&s
 
 /// Reset the DFU device via USB reset to clear stale state.
 ///
-/// If `serial` is provided, resets only the device with that USB serial number.
-fn reset_dfu_device(serial: Option<&str>) -> Result<()> {
+/// Resets the device with the given USB serial number.
+fn reset_dfu_device(serial: &str) -> Result<()> {
     let context = rusb::Context::new().context("failed to create USB context")?;
 
     if let Some((_device, _desc, handle)) = find_matching_attentio_usb_device(&context, serial)? {
@@ -480,13 +492,12 @@ fn reset_dfu_device(serial: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    anyhow::bail!("DFU device not found for reset")
+    anyhow::bail!("DFU device with serial '{}' not found for reset", serial)
 }
 
-/// Synchronous poll until a DFU device appears on USB, or timeout.
-///
-/// If `serial` is provided, waits for a device with that USB serial number.
-fn wait_for_dfu_device_sync(serial: Option<&str>) -> Result<()> {
+/// Synchronous poll until a DFU device with the given serial appears on USB,
+/// or timeout.
+fn wait_for_dfu_device_sync(serial: &str) -> Result<()> {
     let start = Instant::now();
     let timeout = Duration::from_secs(5);
     let poll_interval = Duration::from_millis(200);
@@ -501,14 +512,22 @@ fn wait_for_dfu_device_sync(serial: Option<&str>) -> Result<()> {
         }
 
         if start.elapsed() > timeout {
-            anyhow::bail!("timed out waiting for DFU device to re-enumerate after reset");
+            anyhow::bail!(
+                "timed out waiting for DFU device (serial {}) to re-enumerate after reset",
+                serial
+            );
         }
     }
 }
 
+/// Enumerate USB devices and return the one matching a known Attentio VID/PID
+/// pair (application or STM bootloader) with the given USB iSerialNumber.
+///
+/// Returns Ok(None) if no matching device was found. Errors only on USB
+/// enumeration failure.
 fn find_matching_attentio_usb_device<C: rusb::UsbContext>(
     context: &C,
-    serial: Option<&str>,
+    target_serial: &str,
 ) -> Result<
     Option<(
         rusb::Device<C>,
@@ -520,6 +539,10 @@ fn find_matching_attentio_usb_device<C: rusb::UsbContext>(
         .devices()
         .context("failed to enumerate USB devices")?;
 
+    let mut total_vidpid_matches: usize = 0;
+    let mut open_failures: usize = 0;
+    let mut serial_read_failures: usize = 0;
+
     for device in devices.iter() {
         let desc = match device.device_descriptor() {
             Ok(d) => d,
@@ -529,69 +552,65 @@ fn find_matching_attentio_usb_device<C: rusb::UsbContext>(
         if !config::is_known_device(desc.vendor_id(), desc.product_id()) {
             continue;
         }
+        total_vidpid_matches += 1;
 
         let handle = match device.open() {
             Ok(h) => h,
-            Err(_) => continue,
+            Err(e) => {
+                debug!(
+                    "open() failed for {:04x}:{:04x} at bus {} device {}: {}",
+                    desc.vendor_id(),
+                    desc.product_id(),
+                    device.bus_number(),
+                    device.address(),
+                    e
+                );
+                open_failures += 1;
+                continue;
+            }
         };
 
-        if let Some(target_serial) = serial {
-            match handle.read_serial_number_string_ascii(&desc) {
-                Ok(s) if s == target_serial => {
-                    return Ok(Some((device, desc, handle)));
-                }
-                _ => continue,
+        match handle.read_serial_number_string_ascii(&desc) {
+            Ok(s) if s == target_serial => {
+                return Ok(Some((device, desc, handle)));
             }
-        } else {
-            return Ok(Some((device, desc, handle)));
+            Ok(s) => {
+                debug!(
+                    "USB device serial '{}' does not match target '{}'",
+                    s, target_serial
+                );
+            }
+            Err(e) => {
+                debug!(
+                    "read_serial_number_string_ascii failed for {:04x}:{:04x}: {}",
+                    desc.vendor_id(),
+                    desc.product_id(),
+                    e
+                );
+                serial_read_failures += 1;
+            }
         }
     }
+
+    debug!(
+        "find_matching_attentio_usb_device: target='{}' vidpid_matches={} open_failures={} serial_read_failures={}",
+        target_serial, total_vidpid_matches, open_failures, serial_read_failures
+    );
 
     Ok(None)
 }
 
 /// Inner flash implementation — called by flash_dfu_device with retry logic.
 ///
-/// If `serial` is provided, opens the specific DFU device with that USB serial.
-/// Otherwise opens the first device matching VID/PID.
+/// Always opens the specific DFU device with the given USB serial.
 fn flash_dfu_device_inner(
     firmware_data: &[u8],
     firmware_len: usize,
-    serial: Option<&str>,
+    serial: &str,
 ) -> Result<()> {
     let context = rusb::Context::new().context("failed to create USB context")?;
 
-    // Open the DFU device — if serial is specified, manually enumerate and
-    // filter by serial using from_usb_device(); otherwise use open() for
-    // backward compatibility.
-    let mut dfu = if let Some(target_serial) = serial {
-        open_dfu_by_serial(&context, target_serial)?
-    } else {
-        // Try pid.codes VID/PID first, then STM32 DFU fallback
-        dfu_libusb::DfuLibusb::open(
-            &context,
-            config::ATTENTIO_VID,
-            config::ATTENTIO_PID,
-            DFU_IFACE,
-            DFU_ALT,
-        )
-        .or_else(|_| {
-            dfu_libusb::DfuLibusb::open(
-                &context,
-                config::STM_DFU_VID,
-                config::STM_DFU_PID,
-                DFU_IFACE,
-                DFU_ALT,
-            )
-        })
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to open DFU device: {} — \
-                 check USB permissions (udev rules) and ensure the device is in bootloader mode",
-                e
-            )
-        })?
-    };
+    let mut dfu = open_dfu_by_serial(&context, serial)?;
 
     // Set the target flash address (after bootloader)
     dfu.override_address(APP_BASE_ADDRESS);

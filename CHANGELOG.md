@@ -13,6 +13,30 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-10)
+
+Added
+
+- **`DfuEvent` and `flash_firmware_for_serial()` — GUI-friendly DFU library API** —
+  added to the crate's public surface (`src/cli/commands/dfu`) so the desktop app
+  can drive firmware updates programmatically without terminal output or interactive
+  device selection.
+
+  `DfuEvent` carries structured progress variants (`ValidatingFirmware`,
+  `EnteringBootloader`, `Erasing`, `Writing { bytes_written, bytes_total }`,
+  `WaitingForReboot`, `Done`) delivered through a
+  `tokio::sync::mpsc::UnboundedSender` whose `send()` is sync and therefore safe to
+  call from `spawn_blocking` threads.
+
+  `flash_firmware_for_serial(serial, firmware_data, tx)` reuses all existing private
+  helpers (`FirmwareHeader::parse/validate`, `execute_enter_internal`,
+  `open_dfu_by_serial`, `wait_for_device_mode`) and adds a new blocking
+  `flash_dfu_device_with_events` variant that reports byte-level write progress
+  through the channel instead of `indicatif` terminal bars. The CLI binary and its
+  commands are unaffected.
+
+---
+
 ## [Development] (2026-05-09)
 
 Added

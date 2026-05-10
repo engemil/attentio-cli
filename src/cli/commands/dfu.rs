@@ -15,6 +15,23 @@ use crate::device::discovery::{
 use crate::json_output;
 use crate::protocol::packet::{build_packet, CMD_DFU_ENTER};
 
+// ── Public GUI-friendly DFU progress events ──────────────────────────────────
+
+/// Structured progress events emitted by [`flash_firmware_for_serial`].
+///
+/// Designed for GUI callers that need structured state rather than terminal
+/// output. `UnboundedSender::send()` is sync so these can be sent from both
+/// async code and `spawn_blocking` threads.
+#[derive(Debug)]
+pub enum DfuEvent {
+    ValidatingFirmware,
+    EnteringBootloader,
+    Erasing,
+    Writing { bytes_written: u64, bytes_total: u64 },
+    WaitingForReboot,
+    Done,
+}
+
 // ── Firmware header constants ────────────────────────────────────────────────
 
 /// Magic value in the first 4 bytes of the application header (little-endian).
@@ -680,6 +697,137 @@ fn flash_dfu_device_inner(
             let err_str = e.to_string();
             // When manifestation triggers a reboot, the device drops off the bus.
             // Depending on OS/timing, this surfaces as an I/O Error, Broken Pipe, or No such device.
+            if err_str.contains("Input/Output Error")
+                || err_str.contains("Pipe")
+                || err_str.contains("No such device")
+                || err_str.contains("Not found")
+            {
+                debug!("DFU download completed with expected USB drop: {}", e);
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("DFU download failed: {}", e))
+            }
+        }
+    }
+}
+
+// ── Public GUI-friendly flash entry-point ────────────────────────────────────
+
+/// Flash firmware to a specific device, reporting structured progress events
+/// via `tx` instead of terminal output.
+///
+/// `serial` must be the device's USB iSerialNumber string. The device may be
+/// in Normal or Bootloader mode; if Normal, a `DFU_ENTER` AP command is sent
+/// first and the function waits for re-enumeration before flashing.
+///
+/// Intended for the desktop app's Rust API layer. Unlike [`execute`], this
+/// function does not perform interactive device selection or print to stderr.
+pub async fn flash_firmware_for_serial(
+    serial: &str,
+    firmware_data: Vec<u8>,
+    tx: tokio::sync::mpsc::UnboundedSender<DfuEvent>,
+) -> anyhow::Result<()> {
+    // Step 1: Validate the firmware binary.
+    let _ = tx.send(DfuEvent::ValidatingFirmware);
+    let header = FirmwareHeader::parse(&firmware_data)?;
+    header.validate(&firmware_data)?;
+
+    // Step 2: Ensure device is in bootloader mode.
+    let devices = find_devices_fast().unwrap_or_default();
+    let mode = devices
+        .iter()
+        .find(|d| d.serial == serial)
+        .map(|d| d.mode)
+        .unwrap_or(DeviceMode::Unknown);
+
+    match mode {
+        DeviceMode::Normal => {
+            let _ = tx.send(DfuEvent::EnteringBootloader);
+            execute_enter_internal(Some(serial)).await?;
+        }
+        DeviceMode::Bootloader => {
+            // Already in bootloader — proceed directly.
+        }
+        DeviceMode::Unknown => {
+            anyhow::bail!("device '{}' is in unknown mode — cannot start DFU", serial);
+        }
+    }
+
+    // Step 3: Flash (blocking — DfuSync is !Send).
+    let _ = tx.send(DfuEvent::Erasing);
+    let firmware_len = firmware_data.len() as u64;
+    let serial_owned = serial.to_string();
+    let tx_clone = tx.clone();
+
+    let flash_result = tokio::task::spawn_blocking(move || {
+        flash_dfu_device_with_events(&firmware_data, firmware_len, &serial_owned, tx_clone)
+    })
+    .await
+    .context("DFU flash task panicked")?;
+
+    flash_result?;
+
+    // Step 4: Wait for device to re-enumerate in normal mode.
+    let _ = tx.send(DfuEvent::WaitingForReboot);
+    tokio::time::sleep(POST_REBOOT_DELAY).await;
+    wait_for_device_mode(DeviceMode::Normal, Some(serial), POST_FLASH_TIMEOUT, false).await?;
+
+    let _ = tx.send(DfuEvent::Done);
+    Ok(())
+}
+
+/// Blocking DFU flash with structured event reporting. Mirrors
+/// [`flash_dfu_device`] but uses an `UnboundedSender` instead of `indicatif`.
+///
+/// `UnboundedSender::send()` is sync — safe to call from `spawn_blocking`.
+fn flash_dfu_device_with_events(
+    firmware_data: &[u8],
+    firmware_len: u64,
+    serial: &str,
+    tx: tokio::sync::mpsc::UnboundedSender<DfuEvent>,
+) -> anyhow::Result<()> {
+    match flash_dfu_device_with_events_inner(firmware_data, firmware_len, serial, tx.clone()) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if e.to_string().contains("invalid state") {
+                reset_dfu_device(serial)?;
+                flash_dfu_device_with_events_inner(firmware_data, firmware_len, serial, tx)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn flash_dfu_device_with_events_inner(
+    firmware_data: &[u8],
+    firmware_len: u64,
+    serial: &str,
+    tx: tokio::sync::mpsc::UnboundedSender<DfuEvent>,
+) -> anyhow::Result<()> {
+    let context = rusb::Context::new().context("failed to create USB context")?;
+    let mut dfu = open_dfu_by_serial(&context, serial)?;
+    dfu.override_address(APP_BASE_ADDRESS);
+
+    let mut erase_finished = false;
+    let mut total_written: u64 = 0;
+
+    dfu.with_progress(move |bytes_written| {
+        if !erase_finished {
+            erase_finished = true;
+            // First callback means erase is done and writing has begun.
+        }
+        total_written += bytes_written as u64;
+        let _ = tx.send(DfuEvent::Writing {
+            bytes_written: total_written,
+            bytes_total: firmware_len,
+        });
+    });
+
+    match dfu.download_from_slice(firmware_data) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let err_str = e.to_string();
             if err_str.contains("Input/Output Error")
                 || err_str.contains("Pipe")
                 || err_str.contains("No such device")

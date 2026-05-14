@@ -13,6 +13,44 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-14)
+
+Added
+
+- **Windows build support** — the crate now compiles for `x86_64-pc-windows-gnu`
+  and `x86_64-pc-windows-msvc` targets. Previously the device I/O layer used
+  POSIX-only APIs unconditionally (`libc::open`, `termios`, `TIOCEXCL`,
+  `/proc/*/fd` scanning), so the crate could only be built on Unix. The Linux
+  code path is unchanged.
+
+  - `device::connection`: the existing Unix `open_serial()` (raw `libc::open` →
+    `TIOCEXCL` → `cfmakeraw` → `serialport::TTYPort::from_raw_fd` →
+    `tokio_serial::SerialStream`) is now gated behind `#[cfg(unix)]`. A new
+    `#[cfg(windows)]` branch opens the port via
+    `tokio_serial::new(path, 115_200).open_native_async()`, which uses
+    `CreateFileW` without sharing flags — giving exclusive access for free.
+    `serialport::Error` of kind `PermissionDenied` is mapped to
+    `AttentioError::PortBusy` so callers see the same error type on both
+    platforms.
+  - `DeviceConnection.fd` / `owns_fd` and the `FdGuard.fd` field are
+    `#[cfg(unix)]`. On Windows `FdGuard` is a unit marker; the `Drop` impls do
+    nothing on Windows because the OS releases the port handle on close.
+  - `device::discovery`: `CdcPort.path` doc updated to mention Windows `COM*`
+    paths alongside `/dev/ttyACM0`. `resolve_port_serial` keeps its Linux-only
+    sysfs fallback; on Windows `serialport`'s `serial_number` field is
+    populated reliably.
+  - `cli::commands::dfu`: three "check USB permissions (udev rules)" error
+    hints replaced by a single `usb_permission_hint()` helper that returns
+    platform-appropriate text — udev guidance on Linux, "install a WinUSB
+    driver for the DFU interface (use Zadig)" on Windows.
+
+  Verified with `cargo check` for both the host Linux target and
+  `x86_64-pc-windows-gnu` (clean, no warnings). DFU over USB on Windows still
+  requires the user to bind a WinUSB driver to the bootloader interface
+  manually via Zadig.
+
+---
+
 ## [Development] (2026-05-10)
 
 Added

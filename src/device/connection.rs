@@ -1,24 +1,42 @@
+#[cfg(unix)]
 use std::ffi::CString;
+#[cfg(unix)]
 use std::mem::MaybeUninit;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, warn};
+#[cfg(windows)]
+use tokio_serial::SerialPortBuilderExt;
+use tracing::debug;
+#[cfg(unix)]
+use tracing::warn;
 
 use crate::error::AttentioError;
 
 /// Default timeout for `read_line()` (used by the serial reader stream).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default baud rate used when opening a port on Windows.
+///
+/// Attentio devices use USB CDC-ACM, where the baud rate is virtual (the
+/// wire-level USB transfer rate is fixed), but `tokio_serial::new()` requires
+/// a value. 115200 is the conventional default.
+#[cfg(windows)]
+const DEFAULT_BAUD: u32 = 115_200;
+
 /// An async connection to a device over a serial port.
 pub struct DeviceConnection {
     /// Raw file descriptor — retained so Drop can clear TIOCEXCL before close.
+    #[cfg(unix)]
     fd: RawFd,
     /// True while the fd is owned by this struct. If `into_parts()` was called,
     /// this becomes false and Drop skips TIOCNXCL — the [`FdGuard`] returned by
     /// `into_parts()` takes over ownership.
+    #[cfg(unix)]
     owns_fd: bool,
     reader: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
     writer: tokio::io::WriteHalf<tokio_serial::SerialStream>,
@@ -27,20 +45,23 @@ pub struct DeviceConnection {
 
 impl Drop for DeviceConnection {
     fn drop(&mut self) {
-        if !self.owns_fd {
-            // Halves and the fd guard were extracted via into_parts(); the
-            // FdGuard is responsible for clearing TIOCNXCL when it drops.
-            return;
+        #[cfg(unix)]
+        {
+            if !self.owns_fd {
+                // Halves and the fd guard were extracted via into_parts(); the
+                // FdGuard is responsible for clearing TIOCNXCL when it drops.
+                return;
+            }
+            // Clear exclusive mode so the port is immediately available to the next
+            // opener. The kernel releases TIOCEXCL on close() anyway, but doing it
+            // explicitly here means the port is unlocked before the fd is fully
+            // torn down by the tokio/serialport layers — avoiding a brief window
+            // where check_port_in_use() (via /proc scan) would still see it as open.
+            unsafe {
+                libc::ioctl(self.fd, libc::TIOCNXCL);
+            }
+            debug!("Serial port released (TIOCNXCL cleared)");
         }
-        // Clear exclusive mode so the port is immediately available to the next
-        // opener. The kernel releases TIOCEXCL on close() anyway, but doing it
-        // explicitly here means the port is unlocked before the fd is fully
-        // torn down by the tokio/serialport layers — avoiding a brief window
-        // where check_port_in_use() (via /proc scan) would still see it as open.
-        unsafe {
-            libc::ioctl(self.fd, libc::TIOCNXCL);
-        }
-        debug!("Serial port released (TIOCNXCL cleared)");
     }
 }
 
@@ -81,34 +102,56 @@ impl ConnWriter {
 /// Must outlive any [`ConnReader`] / [`ConnWriter`] derived from the same
 /// connection (the halves use the fd via tokio internally and become invalid
 /// once the fd is closed).
+///
+/// On Windows this is a unit marker — Windows opens serial ports exclusively by
+/// default (the `serialport` crate uses `CreateFileW` without sharing flags),
+/// so no explicit release is needed.
 pub struct FdGuard {
+    #[cfg(unix)]
     fd: RawFd,
 }
 
 impl Drop for FdGuard {
     fn drop(&mut self) {
-        unsafe {
-            libc::ioctl(self.fd, libc::TIOCNXCL);
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::ioctl(self.fd, libc::TIOCNXCL);
+            }
+            debug!("Serial port released (TIOCNXCL cleared via FdGuard)");
         }
-        debug!("Serial port released (TIOCNXCL cleared via FdGuard)");
     }
 }
 
 impl DeviceConnection {
     /// Open an async serial connection to the given port path.
     ///
-    /// First checks whether any other process already has the port open (via
-    /// `/proc` scan). If so, returns [`AttentioError::PortBusy`] without
-    /// touching the device. After a successful open, claims `TIOCEXCL` so
-    /// that future non-root processes cannot open the port while we hold it.
+    /// On Unix, first checks whether any other process already has the port
+    /// open (via `/proc` scan). If so, returns [`AttentioError::PortBusy`]
+    /// without touching the device. After a successful open, claims `TIOCEXCL`
+    /// so that future non-root processes cannot open the port while we hold it.
+    ///
+    /// On Windows, exclusive access is provided by `CreateFileW`'s default
+    /// (no sharing) flags inside the `serialport` crate, so a separate busy
+    /// check is unnecessary.
     pub fn open(port_path: &str) -> Result<Self, AttentioError> {
         debug!("Opening serial port: {}", port_path);
 
-        let (fd, port) = open_serial(port_path)?;
-        let (read_half, write_half) = tokio::io::split(port);
+        let port = open_serial(port_path)?;
+
+        #[cfg(unix)]
+        let fd = port.0;
+        #[cfg(unix)]
+        let stream = port.1;
+        #[cfg(windows)]
+        let stream = port;
+
+        let (read_half, write_half) = tokio::io::split(stream);
 
         Ok(Self {
+            #[cfg(unix)]
             fd,
+            #[cfg(unix)]
             owns_fd: true,
             reader: BufReader::new(read_half),
             writer: write_half,
@@ -173,10 +216,15 @@ impl DeviceConnection {
     /// from different tasks. The [`FdGuard`] takes over the responsibility of
     /// clearing `TIOCEXCL` on drop and **must** be kept alive at least as long
     /// as either half — when the guard drops, the fd is no longer protected
-    /// from races with re-openers.
+    /// from races with re-openers. On Windows, `FdGuard` is a no-op marker.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     pub fn into_parts(mut self) -> (ConnReader, ConnWriter, FdGuard) {
         // Disarm Drop so it doesn't fire TIOCNXCL on the fd we're handing off.
-        self.owns_fd = false;
+        #[cfg(unix)]
+        {
+            self.owns_fd = false;
+        }
+        #[cfg(unix)]
         let fd = self.fd;
 
         // Move the halves out. We can't pattern-destructure self because of the
@@ -191,7 +239,10 @@ impl DeviceConnection {
         (
             ConnReader { inner: reader },
             ConnWriter { inner: writer },
-            FdGuard { fd },
+            FdGuard {
+                #[cfg(unix)]
+                fd,
+            },
         )
     }
 }
@@ -204,6 +255,7 @@ impl DeviceConnection {
 ///
 /// Permission errors on individual `/proc/<pid>/fd` directories are silently
 /// skipped — this is normal for processes owned by other users.
+#[cfg(unix)]
 fn check_port_in_use(port_path: &str) -> Result<(), AttentioError> {
     // Stat the target port to get its device number (st_rdev).
     let port_meta = match std::fs::metadata(port_path) {
@@ -275,7 +327,7 @@ fn check_port_in_use(port_path: &str) -> Result<(), AttentioError> {
     Ok(())
 }
 
-/// Open a serial port with exclusive access.
+/// Open a serial port with exclusive access (Unix).
 ///
 /// Before opening, scans `/proc/*/fd/` to detect whether any other process
 /// already has the port open — if so, returns [`AttentioError::PortBusy`]
@@ -290,6 +342,7 @@ fn check_port_in_use(port_path: &str) -> Result<(), AttentioError> {
 ///
 /// Returns both the raw fd and the async stream. The caller stores the fd in
 /// `DeviceConnection` so `Drop` can call `TIOCNXCL` before the fd is closed.
+#[cfg(unix)]
 fn open_serial(port_path: &str) -> Result<(RawFd, tokio_serial::SerialStream), AttentioError> {
     // Step 1: Check if another process already has the port open.
     check_port_in_use(port_path)?;
@@ -341,6 +394,32 @@ fn open_serial(port_path: &str) -> Result<(RawFd, tokio_serial::SerialStream), A
     result.map(|stream| (fd, stream))
 }
 
+/// Open a serial port (Windows).
+///
+/// Uses `tokio_serial`'s high-level builder, which opens the COM port via
+/// `CreateFileW` without sharing flags — giving us exclusive access for free.
+/// A `serialport::Error` with `ErrorKind::NoDevice` maps to `PortBusy` when
+/// another process already holds the port.
+#[cfg(windows)]
+fn open_serial(port_path: &str) -> Result<tokio_serial::SerialStream, AttentioError> {
+    let stream = tokio_serial::new(port_path, DEFAULT_BAUD)
+        .open_native_async()
+        .map_err(|e| {
+            // Windows reports `ERROR_ACCESS_DENIED` when another process has the
+            // port open with exclusive access; map that to PortBusy.
+            if matches!(e.kind, serialport::ErrorKind::Io(std::io::ErrorKind::PermissionDenied)) {
+                AttentioError::PortBusy {
+                    port: port_path.to_string(),
+                }
+            } else {
+                AttentioError::Serial(e)
+            }
+        })?;
+
+    debug!("Serial port opened: {}", port_path);
+    Ok(stream)
+}
+
 /// Configure termios on an open fd and convert it to an async SerialStream.
 ///
 /// This replicates the essential setup from `serialport::TTYPort::open()`:
@@ -349,6 +428,7 @@ fn open_serial(port_path: &str) -> Result<(RawFd, tokio_serial::SerialStream), A
 ///   - Clear O_NONBLOCK (the async layer re-adds it as needed)
 ///
 /// Then builds the async stream via `TTYPort::from_raw_fd()` → `SerialStream::try_from()`.
+#[cfg(unix)]
 fn configure_and_convert(
     fd: i32,
     port_path: &str,

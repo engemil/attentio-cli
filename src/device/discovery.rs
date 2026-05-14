@@ -83,7 +83,7 @@ impl std::fmt::Display for CdcRole {
 /// A CDC port associated with a device.
 #[derive(Debug, Clone, Serialize)]
 pub struct CdcPort {
-    /// System port path (e.g. /dev/ttyACM0).
+    /// System port path (e.g. `/dev/ttyACM0` on Linux, `COM3` on Windows).
     pub path: String,
     /// Role of this CDC interface.
     pub role: CdcRole,
@@ -485,6 +485,7 @@ fn read_serial_from_sysfs(port_path: &str) -> Option<String> {
 /// On Linux, `serialport` often returns `serial_number: None`, so we read
 /// the serial from sysfs as a fallback. On other platforms, we rely on
 /// `serialport`'s value (which is typically correct on Windows and macOS).
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 fn resolve_port_serial(port_path: &str, serialport_serial: Option<&str>) -> String {
     // If serialport already gave us a serial, use it
     if let Some(s) = serialport_serial {

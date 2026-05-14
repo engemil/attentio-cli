@@ -15,6 +15,27 @@ use crate::device::discovery::{
 use crate::json_output;
 use crate::protocol::packet::{build_packet, CMD_DFU_ENTER};
 
+/// Platform-specific hint shown when libusb can't open or enumerate a device.
+///
+/// On Linux the typical fix is a missing udev rule; on Windows the user has to
+/// install a WinUSB driver (e.g. via Zadig) because the OS doesn't bind a
+/// generic-USB driver to DFU interfaces by default; on macOS the system grants
+/// libusb access without extra setup.
+const fn usb_permission_hint() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "check USB permissions (udev rules)"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "install a WinUSB driver for the DFU interface (use Zadig)"
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        "check USB permissions for this device"
+    }
+}
+
 // ── Public GUI-friendly DFU progress events ──────────────────────────────────
 
 /// Structured progress events emitted by [`flash_firmware_for_serial`].
@@ -366,8 +387,8 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
     if devices.is_empty() {
         anyhow::bail!(
             "no Attentio device found — connect a device and try again\n\
-             Hint: if the device is in bootloader mode but not detected, \
-             check USB permissions (udev rules)"
+             Hint: if the device is in bootloader mode but not detected, {}",
+            usb_permission_hint()
         );
     }
 
@@ -379,8 +400,8 @@ async fn execute_flash_internal(firmware_path: &str, device: Option<&str>) -> Re
 
     if resolved.serial == "unknown" {
         anyhow::bail!(
-            "cannot DFU device with unknown USB serial — descriptor read failed; \
-             check USB permissions (udev rules) or replug the device"
+            "cannot DFU device with unknown USB serial — descriptor read failed; {} or replug the device",
+            usb_permission_hint()
         );
     }
 
@@ -455,10 +476,10 @@ fn open_dfu_by_serial<C: rusb::UsbContext>(
         return dfu_libusb::DfuLibusb::from_usb_device(device, handle, DFU_IFACE, DFU_ALT)
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "failed to open DFU device (serial {}): {} — \
-                     check USB permissions (udev rules) and ensure the device is in bootloader mode",
+                    "failed to open DFU device (serial {}): {} — {} and ensure the device is in bootloader mode",
                     target_serial,
-                    e
+                    e,
+                    usb_permission_hint()
                 )
             });
     }

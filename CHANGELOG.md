@@ -13,6 +13,18 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-06-03)
+
+Changed
+
+- `src/device/connection.rs`, `ConnReader` / `ConnWriter` are now single-variant
+  enums (`Serial`) that dispatch `read_raw` / `write_raw`, establishing the seam
+  for a future BLE transport variant. Behavior-preserving: `ApClient`, the reader
+  loop, and the AP/CRC layer are untouched, and USB serial remains the only
+  transport. Builds clean; all unit tests pass.
+
+---
+
 ## [Development] (2026-05-14)
 
 Added

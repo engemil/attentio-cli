@@ -65,35 +65,48 @@ impl Drop for DeviceConnection {
     }
 }
 
-/// Read half of a split [`DeviceConnection`].
+/// Read half of a split connection.
 ///
-/// Owned by a permanent reader task in [`crate::protocol::client::ApClient`]
-/// when `into_parts()` is used; can also be used directly by short-lived
-/// readers (e.g. CLI monitor).
-pub struct ConnReader {
-    inner: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
+/// One variant per transport — serial (USB CDC-ACM) today, with a BLE variant
+/// to follow. All variants expose `read_raw`, so consumers
+/// (e.g. the permanent reader task in [`crate::protocol::client::ApClient`], or
+/// the CLI monitor) are transport-agnostic.
+pub enum ConnReader {
+    /// Serial read half.
+    Serial {
+        inner: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
+    },
 }
 
 impl ConnReader {
-    /// Read raw bytes from the port into `buf`.
+    /// Read raw bytes into `buf`.
     ///
     /// Returns the number of bytes read.
     pub async fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize, AttentioError> {
-        self.inner.read(buf).await.map_err(AttentioError::Io)
+        match self {
+            ConnReader::Serial { inner } => inner.read(buf).await.map_err(AttentioError::Io),
+        }
     }
 }
 
-/// Write half of a split [`DeviceConnection`].
-pub struct ConnWriter {
-    inner: tokio::io::WriteHalf<tokio_serial::SerialStream>,
+/// Write half of a split connection. One variant per transport (see [`ConnReader`]).
+pub enum ConnWriter {
+    /// Serial write half.
+    Serial {
+        inner: tokio::io::WriteHalf<tokio_serial::SerialStream>,
+    },
 }
 
 impl ConnWriter {
-    /// Write raw bytes to the port and flush.
+    /// Write raw bytes and flush.
     pub async fn write_raw(&mut self, data: &[u8]) -> Result<(), AttentioError> {
-        self.inner.write_all(data).await.map_err(AttentioError::Io)?;
-        self.inner.flush().await.map_err(AttentioError::Io)?;
-        Ok(())
+        match self {
+            ConnWriter::Serial { inner } => {
+                inner.write_all(data).await.map_err(AttentioError::Io)?;
+                inner.flush().await.map_err(AttentioError::Io)?;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -237,8 +250,8 @@ impl DeviceConnection {
         std::mem::forget(self);
 
         (
-            ConnReader { inner: reader },
-            ConnWriter { inner: writer },
+            ConnReader::Serial { inner: reader },
+            ConnWriter::Serial { inner: writer },
             FdGuard {
                 #[cfg(unix)]
                 fd,

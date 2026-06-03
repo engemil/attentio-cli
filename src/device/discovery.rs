@@ -22,6 +22,30 @@ fn name_cache() -> &'static Mutex<HashMap<String, String>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Cache of the known CDC protocol port path per device serial number.
+///
+/// On Windows (and potentially other platforms), COM port numbers don't
+/// reliably correspond to USB interface order. Once we've successfully
+/// probed which port is the protocol port (CDC1), we cache that mapping
+/// so subsequent discovery cycles don't need to re-probe — which would
+/// fail when the ApClient already holds the port exclusively.
+fn cdc_protocol_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Remember the protocol port path for a device serial number.
+fn cdc_protocol_cache_remember(serial: &str, port_path: &str) {
+    if let Ok(mut g) = cdc_protocol_cache().lock() {
+        g.insert(serial.to_string(), port_path.to_string());
+    }
+}
+
+/// Return the cached protocol port path for a device serial number, if known.
+fn cdc_protocol_cache_lookup(serial: &str) -> Option<String> {
+    cdc_protocol_cache().lock().ok().and_then(|g| g.get(serial).cloned())
+}
+
 pub fn cache_remember(serial: &str, name: &str) {
     if let Ok(mut g) = name_cache().lock() {
         g.insert(serial.to_string(), name.to_string());
@@ -187,6 +211,11 @@ fn detect_device_mode(product: Option<&String>) -> DeviceMode {
 pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
     let mut devices = find_devices_fast()?;
 
+    // On some platforms (notably Windows), COM port numbers don't correspond
+    // to USB interface indices. Probe dual-CDC devices to determine which
+    // port is the protocol port (CDC1) and which is serial prints (CDC0).
+    probe_and_fix_cdc_roles(&mut devices).await;
+
     // Query device_name from all normal-mode devices in parallel via AP protocol.
     // Each device has its own independent CDC port, so parallel access is safe
     // and reduces total latency compared to sequential queries.
@@ -226,6 +255,125 @@ pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
     }
 
     Ok(devices)
+}
+
+/// Probe dual-CDC devices to determine which port is the protocol port.
+///
+/// On Linux, `/dev/ttyACM0` is always interface 0 (serial prints) and
+/// `/dev/ttyACM1` is interface 1 (protocol), so alphabetical order works.
+/// On Windows, COM port numbers are assigned arbitrarily by the OS and don't
+/// reliably correspond to USB interface order. This function opens each
+/// candidate port, sends a PING command, and swaps CDC0/CDC1 if the currently
+/// assigned protocol port doesn't respond.
+async fn probe_and_fix_cdc_roles(devices: &mut [AttentioDevice]) {
+    for device in devices.iter_mut() {
+        // Only probe dual-CDC devices in Normal mode that have both ports.
+        if device.mode != DeviceMode::Normal {
+            continue;
+        }
+        let (Some(cdc0_path), Some(cdc1_path)) = (
+            device.cdc0.as_ref().map(|p| p.path.clone()),
+            device.cdc1.as_ref().map(|p| p.path.clone()),
+        ) else {
+            continue;
+        };
+
+        // If we already know the protocol port from a previous successful
+        // probe, apply the cached assignment without re-probing. This avoids
+        // Access Denied errors when the ApClient already holds the port.
+        if let Some(cached_protocol_port) = cdc_protocol_cache_lookup(&device.serial) {
+            if cached_protocol_port != cdc1_path {
+                debug!(
+                    "Applying cached CDC role swap for {}: CDC1={}",
+                    device.serial, cached_protocol_port
+                );
+                device.cdc0 = Some(CdcPort {
+                    path: cdc1_path,
+                    role: CdcRole::SerialPrints,
+                });
+                device.cdc1 = Some(CdcPort {
+                    path: cdc0_path,
+                    role: CdcRole::Protocol,
+                });
+            }
+            // Cached assignment matches current — no swap needed.
+            continue;
+        }
+
+        // Try the currently assigned protocol port (CDC1) first.
+        debug!("Probing protocol port: {} (CDC1)", cdc1_path);
+        if probe_port_ping(&cdc1_path).await {
+            debug!("Port {} responded to PING — CDC1 assignment correct", cdc1_path);
+            cdc_protocol_cache_remember(&device.serial, &cdc1_path);
+            continue;
+        }
+
+        // Protocol port didn't respond. Try the serial prints port (CDC0).
+        debug!("Port {} did not respond to PING — trying {} as protocol", cdc1_path, cdc0_path);
+        if probe_port_ping(&cdc0_path).await {
+            debug!(
+                "Port {} responded to PING — swapping CDC0/CDC1",
+                cdc0_path
+            );
+            device.cdc0 = Some(CdcPort {
+                path: cdc1_path,
+                role: CdcRole::SerialPrints,
+            });
+            let protocol_port = cdc0_path.clone();
+            device.cdc1 = Some(CdcPort {
+                path: cdc0_path,
+                role: CdcRole::Protocol,
+            });
+            cdc_protocol_cache_remember(&device.serial, &protocol_port);
+        } else {
+            warn!(
+                "Neither {} nor {} responded to PING — keeping default CDC assignment",
+                cdc1_path, cdc0_path
+            );
+        }
+    }
+}
+
+/// Probe a port by sending an AP PING command.
+///
+/// Opens the port, brief settle delay, sends PING, waits for a response.
+/// Returns `true` if the port responded, `false` on timeout or error.
+/// The port is closed when the function returns.
+async fn probe_port_ping(port_path: &str) -> bool {
+    // Brief delay to let CDC ACM link settle after enumeration.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mut client = match ApClient::open(port_path) {
+        Ok(c) => c,
+        Err(e) => {
+            debug!("Probe: failed to open {}: {}", port_path, e);
+            return false;
+        }
+    };
+
+    // Drain stale bytes from the receive buffer.
+    client.drain().await;
+
+    // Try PING with a short timeout.
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), client.ping()).await;
+
+    // ApClient is dropped here, closing the port.
+    drop(client);
+
+    match result {
+        Ok(Ok(())) => {
+            debug!("Probe: PING response received on {}", port_path);
+            true
+        }
+        Ok(Err(e)) => {
+            debug!("Probe: PING error on {}: {}", port_path, e);
+            false
+        }
+        Err(_) => {
+            debug!("Probe: PING timed out on {}", port_path);
+            false
+        }
+    }
 }
 
 /// Lightweight device discovery without opening serial ports.

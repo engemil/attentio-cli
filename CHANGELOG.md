@@ -13,6 +13,45 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-05-16)
+
+Added
+
+- **CDC role probing for Windows** — `find_devices()` now probes dual-CDC devices
+  to determine which serial port is the Attentio Protocol port (CDC1) and which
+  is the serial prints port (CDC0). On Linux, `/dev/ttyACM0` is always
+  interface 0 and `/dev/ttyACM1` is interface 1, so alphabetical port ordering
+  works. On Windows, COM port numbers are assigned arbitrarily by the OS and
+  don't correspond to USB interface order. The probe sends an AP PING command
+  to each candidate port and swaps CDC0/CDC1 if the default assignment is
+  wrong. A successful probe result is cached per device serial so subsequent
+  discovery cycles don't need to re-probe (which would fail when the port is
+  already held exclusively by ApClient).
+
+  Three new functions in `device::discovery`:
+  - `probe_and_fix_cdc_roles()` — async function called from `find_devices()`
+    before `query_device_name()`. Checks the cache first, then probes both
+    ports if needed.
+  - `probe_port_ping()` — opens a port, sends AP PING, returns true if the
+    device responds. Uses a 500ms timeout.
+  - `cdc_protocol_cache_remember()` / `cdc_protocol_cache_lookup()` —
+    process-local cache mapping device serial → known protocol port path,
+    so repeated discovery cycles skip probing when the ApClient already
+    holds the port.
+
+Fixed
+
+- **AP commands timing out on Windows** — on some Windows configurations,
+  COM port numbers don't match USB interface order (e.g., COM3 is the
+  protocol port and COM4 is the serial prints port). The previous code
+  always assigned the lower-numbered port as CDC0 (serial prints) and the
+  higher-numbered as CDC1 (protocol), which was wrong for these devices.
+  AP commands sent to the wrong port received no response and timed out
+  after 3 seconds. The probe correctly identifies the protocol port on
+  first discovery and caches the result for the app's lifetime.
+
+---
+
 ## [Development] (2026-06-03)
 
 Changed

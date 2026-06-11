@@ -83,6 +83,12 @@ fn try_open_port(path: &str, label: &str, timeout: Duration) -> OpenPortResult {
 /// Top pane: AP protocol traffic (CDC1) — commands, responses, events.
 /// Bottom pane: serial prints (CDC0).
 pub async fn execute(device: Option<&str>) -> Result<()> {
+    // When --ble is active, run the AP-only BLE monitor instead of the
+    // serial-shaped dual-pane path (BLE has no CDC0 serial-print stream).
+    if let Some(selector) = crate::device::ble::active_selector() {
+        return execute_ble(selector).await;
+    }
+
     let dev = resolve_device(device)
         .await
         .context("failed to resolve device")?;
@@ -543,4 +549,146 @@ async fn ap_reconnect_task(
             OpenPortResult::Failed => {}
         }
     }
+}
+
+// ── BLE monitor (AP-only) ────────────────────────────────────────────────────
+
+/// Execute `attentio --ble monitor` — single-pane AP monitor over BLE.
+///
+/// BLE exposes only the AP characteristic (no CDC0 serial-print stream), so the
+/// serial pane is shown as unavailable. AP traffic is observed via the
+/// [`ApClient`] broadcast tap; log-level changes are sent through the same client.
+async fn execute_ble(selector: crate::device::ble::BleSelector) -> Result<()> {
+    use crate::protocol::ApClient;
+
+    let (reader, writer, guard) = crate::device::ble::open(&selector)
+        .await
+        .context("failed to open BLE connection")?;
+    let mut client = ApClient::from_parts(reader, writer, guard);
+    let mut events = client.subscribe_monitor();
+
+    let mut app = App::new(format!("BLE {selector}"), None, false, Some("BLE".to_string()));
+    app.ap_connected = true;
+    app.push_serial_line("Serial prints are not available over BLE.".to_string());
+    app.push_ap_line("Listening for AP traffic...".to_string());
+    app.push_serial_line("Press Esc or Ctrl+C to quit. Tab to switch panes.".to_string());
+
+    // Query the initial log level (the request/response also shows in the AP pane).
+    if let Ok(level) = client.log_get_level().await {
+        app.log_level = Some(level);
+    }
+
+    // Terminal event polling (same pattern as the serial monitor).
+    let (term_tx, mut term_rx) = mpsc::channel::<Event>(64);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_flag = shutdown.clone();
+    let term_handle = tokio::task::spawn_blocking(move || {
+        while !shutdown_flag.load(Ordering::Relaxed) {
+            match event::poll(Duration::from_millis(50)) {
+                Ok(true) => match event::read() {
+                    Ok(evt) => {
+                        if term_tx.blocking_send(evt).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                },
+                Ok(false) => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    let result = async {
+        enable_raw_mode().context("failed to enable raw mode")?;
+        io::stdout()
+            .execute(EnterAlternateScreen)
+            .context("failed to enter alternate screen")?;
+        run_ble_event_loop(&mut app, &mut client, &mut events, &mut term_rx).await
+    }
+    .await;
+
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = tokio::time::timeout(Duration::from_millis(100), term_handle).await;
+    restore_terminal();
+    eprintln!("Monitor session ended.");
+
+    result
+}
+
+/// Event loop for the BLE monitor: terminal keys + AP broadcast events.
+async fn run_ble_event_loop(
+    app: &mut App,
+    client: &mut crate::protocol::ApClient,
+    events: &mut tokio::sync::broadcast::Receiver<crate::protocol::MonitorEvent>,
+    term_rx: &mut mpsc::Receiver<Event>,
+) -> Result<()> {
+    use crate::protocol::MonitorEvent;
+    use tokio::sync::broadcast::error::RecvError;
+
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend).context("failed to create terminal")?;
+    terminal.draw(|frame| ui::render(frame, app))?;
+
+    while app.running {
+        let needs_render = tokio::select! {
+            maybe_event = term_rx.recv() => {
+                match maybe_event {
+                    Some(Event::Key(key)) => {
+                        if key.kind == KeyEventKind::Press {
+                            match monitor_event::handle_key_event(app, key) {
+                                Action::Quit => break,
+                                Action::SetLogLevel(level) => {
+                                    if client.log_set_level(level).await.is_ok() {
+                                        app.log_level = Some(level);
+                                        let name = super::loglevel::level_name(level);
+                                        app.push_serial_line(format!(
+                                            "[Log level set to {} ({})]",
+                                            level, name
+                                        ));
+                                    } else {
+                                        app.push_ap_line(
+                                            "[Failed to send log level command]".to_string(),
+                                        );
+                                    }
+                                }
+                                Action::None => {}
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Some(Event::Resize(_, _)) => true,
+                    Some(_) => false,
+                    None => break,
+                }
+            }
+
+            ev = events.recv() => {
+                match ev {
+                    Ok(MonitorEvent::Incoming(resp)) => {
+                        app.push_ap_line(format::format_incoming(&resp));
+                        true
+                    }
+                    Ok(MonitorEvent::Outgoing { cmd, payload }) => {
+                        app.push_ap_line(format::format_outgoing(cmd, &payload));
+                        true
+                    }
+                    Err(RecvError::Lagged(_)) => false,
+                    Err(RecvError::Closed) => {
+                        app.push_ap_line("[BLE connection closed]".to_string());
+                        app.ap_connected = false;
+                        true
+                    }
+                }
+            }
+        };
+
+        if needs_render {
+            terminal.draw(|frame| ui::render(frame, app))?;
+        }
+    }
+
+    Ok(())
 }

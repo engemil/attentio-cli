@@ -82,6 +82,25 @@ impl std::fmt::Display for DeviceMode {
     }
 }
 
+/// The transport over which a device was discovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    /// USB CDC-ACM serial.
+    Usb,
+    /// Bluetooth Low Energy.
+    Ble,
+}
+
+impl std::fmt::Display for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Transport::Usb => write!(f, "USB"),
+            Transport::Ble => write!(f, "BLE"),
+        }
+    }
+}
+
 /// Represents a CDC port role on a device.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -134,6 +153,15 @@ pub struct AttentioDevice {
     pub cdc1: Option<CdcPort>,
     /// Single CDC port (used when firmware has only one CDC interface).
     pub single_cdc: Option<CdcPort>,
+    /// Transport over which this device was discovered.
+    pub transport: Transport,
+    /// BLE address (BD_ADDR), present only for BLE-discovered devices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ble_address: Option<String>,
+    /// BlueZ pairing status for BLE devices (`Some(true|false)`); `None` for USB
+    /// or when it can't be determined.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paired: Option<bool>,
 }
 
 impl AttentioDevice {
@@ -254,6 +282,45 @@ pub async fn find_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
         }
     }
 
+    Ok(devices)
+}
+
+/// Best-effort BLE scan duration for `list`.
+const BLE_LIST_SCAN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Discover Attentio devices advertising over BLE, mapped to [`AttentioDevice`].
+///
+/// Best-effort: returns an empty list on a host without a BLE adapter so that
+/// `attentio list` still works for USB-only setups.
+pub async fn find_ble_devices() -> Vec<AttentioDevice> {
+    let found = super::ble::scan(BLE_LIST_SCAN).await;
+    let mut devices = Vec::with_capacity(found.len());
+    for info in found {
+        let paired = super::ble::paired_status(&info.address).await;
+        devices.push(AttentioDevice {
+            serial: info.address.clone(),
+            device_type: Some("AttentioLight-1 (BLE)".to_string()),
+            product: info.name,
+            mode: DeviceMode::Normal,
+            usb_location: None,
+            cdc0: None,
+            cdc1: None,
+            single_cdc: None,
+            transport: Transport::Ble,
+            ble_address: Some(info.address),
+            paired,
+        });
+    }
+    devices
+}
+
+/// Enumerate all devices across transports: USB first, then BLE.
+///
+/// Used by `attentio list`. The per-command path (`resolve_device`) stays
+/// USB-only so it doesn't pay the BLE scan latency.
+pub async fn find_all_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
+    let mut devices = find_devices().await?;
+    devices.extend(find_ble_devices().await);
     Ok(devices)
 }
 
@@ -466,6 +533,9 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
                 cdc0: None,
                 cdc1: None,
                 single_cdc: None,
+                transport: Transport::Usb,
+                ble_address: None,
+                paired: None,
             });
         }
     }
@@ -757,6 +827,9 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
                     role: CdcRole::Protocol,
                 }),
                 single_cdc: None,
+                transport: Transport::Usb,
+                ble_address: None,
+                paired: None,
             }
         } else {
             // Single CDC
@@ -776,6 +849,9 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
                     path: ports[0].path.clone(),
                     role: CdcRole::Single,
                 }),
+                transport: Transport::Usb,
+                ble_address: None,
+                paired: None,
             }
         };
 

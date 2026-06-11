@@ -13,6 +13,58 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-06-11)
+
+Added
+
+- **BLE transport (`--ble`)** — the CLI can now drive a device over Bluetooth Low
+  Energy instead of USB-CDC, speaking the same Attentio Protocol (AP) the device
+  already serves over its GATT service. USB remains the default; passing `--ble`
+  routes the connection through the new BLE transport. The AP wire layer
+  (`protocol/packet.rs`, `protocol/crc.rs`) is unchanged and transport-agnostic.
+
+  - New `src/device/ble.rs` (built on `btleplug`): scans by the Attentio service
+    UUID (`1209eea1-0001-…`), connects, resolves the TX (`…-0002`) / RX (`…-0003`)
+    characteristics, subscribes to RX notifications (pumped into the reader via an
+    mpsc channel), and chunks TX writes to MTU−3 (the device reassembles by AP
+    `LEN`). GATT setup is bounded by explicit connect / service-resolve / subscribe
+    timeouts so a stalled BlueZ D-Bus call fails fast with a clear message.
+  - **Device selector** — `--ble` (bare) connects to the single advertised
+    `AttentioLight-1`; `--ble=<name>`, `--ble=<MAC>`, or `--ble=<N>` (the `#` from
+    `attentio list`) pin a specific device. Wired as a `BleSelector` set once in
+    `main.rs` and read by the open-path.
+  - **Unified `attentio list`** — now enumerates USB **and** BLE devices with a
+    per-row transport tag and a `paired: yes/no` indicator. `AttentioDevice`
+    carries `transport: Usb | Ble` and `ble_address`; `device/discovery.rs` reuses
+    `ble::scan` / `ble::paired_status`.
+  - **`attentio --ble monitor`** — the AP monitor view works over BLE as well as
+    USB.
+  - **Linux bonding + bond auto-heal** — the TX characteristic is
+    encryption-required, so the CLI bonds before the first write. `btleplug` 0.11
+    exposes no `pair()`, so on Linux this is done via `bluetoothctl` (no
+    auto-`trust`, which would let BlueZ background-connect and trip the device's
+    single-session firmware). If a host that is already bonded fails to connect,
+    discover, or subscribe with the stale-LTK signature, the CLI drops the host
+    key (`bluetoothctl remove`), re-scans, re-pairs, and retries the connect once
+    — healing the common "host has an LTK the device no longer holds" case.
+
+- **New error variants** — `AttentioError::Ble`, `BleNotFound { selector }`, and
+  `BlePairing` for BLE-specific failures, with JSON `error_type` / `context_data`
+  support.
+
+- **New dependencies** — `btleplug` 0.11 (cross-platform BLE), `futures-util`
+  (notification stream), and `uuid`. Under `-v`, `btleplug` / `bluez_async` logs
+  are surfaced to diagnose stalled GATT operations.
+
+Changed
+
+- **`ConnReader` / `ConnWriter` / `ConnGuard` gain `Ble` variants**
+  (`device/connection.rs`) alongside the existing `Serial` path, so
+  `ApClient::from_parts` drives a BLE connection exactly like a serial one. The
+  serial transport and USB flows are unchanged.
+
+---
+
 ## [Development] (2026-05-16)
 
 Added

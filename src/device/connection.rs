@@ -6,9 +6,13 @@ use std::mem::MaybeUninit;
 use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::io::{FromRawFd, RawFd};
+use std::collections::VecDeque;
 use std::time::Duration;
 
+use btleplug::api::{Characteristic, Peripheral as _, WriteType};
+use btleplug::platform::Peripheral;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
 #[cfg(windows)]
 use tokio_serial::SerialPortBuilderExt;
 use tracing::debug;
@@ -76,6 +80,16 @@ pub enum ConnReader {
     Serial {
         inner: BufReader<tokio::io::ReadHalf<tokio_serial::SerialStream>>,
     },
+    /// BLE read half.
+    ///
+    /// btleplug delivers RX-notify payloads as an async `Stream`; a pump task
+    /// (spawned in [`crate::device::ble::open`]) forwards each notification's
+    /// bytes into `rx`. `leftover` holds bytes from a notification that did not
+    /// fit in a single `read_raw` call's buffer.
+    Ble {
+        rx: mpsc::Receiver<Vec<u8>>,
+        leftover: VecDeque<u8>,
+    },
 }
 
 impl ConnReader {
@@ -85,6 +99,22 @@ impl ConnReader {
     pub async fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize, AttentioError> {
         match self {
             ConnReader::Serial { inner } => inner.read(buf).await.map_err(AttentioError::Io),
+            ConnReader::Ble { rx, leftover } => {
+                // Refill from the notification channel when nothing is buffered.
+                if leftover.is_empty() {
+                    match rx.recv().await {
+                        Some(chunk) => leftover.extend(chunk),
+                        // Pump task ended (peripheral disconnected) — signal EOF,
+                        // matching the serial Ok(0) convention so reader_loop exits.
+                        None => return Ok(0),
+                    }
+                }
+                let n = leftover.len().min(buf.len());
+                for slot in buf.iter_mut().take(n) {
+                    *slot = leftover.pop_front().expect("leftover non-empty");
+                }
+                Ok(n)
+            }
         }
     }
 }
@@ -94,6 +124,13 @@ pub enum ConnWriter {
     /// Serial write half.
     Serial {
         inner: tokio::io::WriteHalf<tokio_serial::SerialStream>,
+    },
+    /// BLE write half — writes AP frames to the TX characteristic, chunked to
+    /// `chunk_size` (ATT MTU − 3); the device reassembles by AP LEN.
+    Ble {
+        peripheral: Peripheral,
+        tx_char: Characteristic,
+        chunk_size: usize,
     },
 }
 
@@ -106,32 +143,72 @@ impl ConnWriter {
                 inner.flush().await.map_err(AttentioError::Io)?;
                 Ok(())
             }
+            ConnWriter::Ble {
+                peripheral,
+                tx_char,
+                chunk_size,
+            } => {
+                // WithResponse matches the verified ble_smoke.py path
+                // (`response=True`) and prompts BlueZ to elevate security
+                // (Just-Works pairing) on the encryption-required TX char.
+                for chunk in data.chunks((*chunk_size).max(1)) {
+                    peripheral
+                        .write(tx_char, chunk, WriteType::WithResponse)
+                        .await
+                        .map_err(|e| AttentioError::Ble(e.to_string()))?;
+                }
+                Ok(())
+            }
         }
     }
 }
 
-/// Owns the raw fd of a split [`DeviceConnection`] and clears TIOCEXCL on drop.
+/// Owns the resources of a split [`DeviceConnection`] and releases them on drop.
 ///
 /// Must outlive any [`ConnReader`] / [`ConnWriter`] derived from the same
-/// connection (the halves use the fd via tokio internally and become invalid
-/// once the fd is closed).
+/// connection (the serial halves use the fd via tokio internally and become
+/// invalid once the fd is closed; the BLE halves rely on the peripheral staying
+/// connected).
 ///
-/// On Windows this is a unit marker — Windows opens serial ports exclusively by
-/// default (the `serialport` crate uses `CreateFileW` without sharing flags),
-/// so no explicit release is needed.
-pub struct FdGuard {
-    #[cfg(unix)]
-    fd: RawFd,
+/// - `Serial` clears `TIOCEXCL` on drop so the port is immediately available to
+///   the next opener. On Windows the fd is absent — Windows opens serial ports
+///   exclusively by default (the `serialport` crate uses `CreateFileW` without
+///   sharing flags), so no explicit release is needed.
+/// - `Ble` holds the connected peripheral so the link stays up for the client's
+///   lifetime, and best-effort disconnects it on drop.
+pub enum ConnGuard {
+    Serial {
+        #[cfg(unix)]
+        fd: RawFd,
+    },
+    Ble {
+        peripheral: Peripheral,
+    },
 }
 
-impl Drop for FdGuard {
+impl Drop for ConnGuard {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            unsafe {
-                libc::ioctl(self.fd, libc::TIOCNXCL);
+        match self {
+            ConnGuard::Serial { .. } => {
+                #[cfg(unix)]
+                {
+                    let ConnGuard::Serial { fd } = self else {
+                        return;
+                    };
+                    unsafe {
+                        libc::ioctl(*fd, libc::TIOCNXCL);
+                    }
+                    debug!("Serial port released (TIOCNXCL cleared via ConnGuard)");
+                }
             }
-            debug!("Serial port released (TIOCNXCL cleared via FdGuard)");
+            ConnGuard::Ble { peripheral } => {
+                // Drop can't await; spawn a best-effort disconnect. The OS also
+                // tears down the link on process exit, so this is a courtesy.
+                let p = peripheral.clone();
+                tokio::spawn(async move {
+                    let _ = p.disconnect().await;
+                });
+            }
         }
     }
 }
@@ -223,15 +300,15 @@ impl DeviceConnection {
         self.reader.read(buf).await.map_err(AttentioError::Io)
     }
 
-    /// Split the connection into independent reader, writer, and fd guard.
+    /// Split the connection into independent reader, writer, and guard.
     ///
     /// The returned [`ConnReader`] and [`ConnWriter`] can be used concurrently
-    /// from different tasks. The [`FdGuard`] takes over the responsibility of
+    /// from different tasks. The [`ConnGuard`] takes over the responsibility of
     /// clearing `TIOCEXCL` on drop and **must** be kept alive at least as long
     /// as either half — when the guard drops, the fd is no longer protected
-    /// from races with re-openers. On Windows, `FdGuard` is a no-op marker.
+    /// from races with re-openers. On Windows, the serial guard is a no-op marker.
     #[cfg_attr(not(unix), allow(unused_mut))]
-    pub fn into_parts(mut self) -> (ConnReader, ConnWriter, FdGuard) {
+    pub fn into_parts(mut self) -> (ConnReader, ConnWriter, ConnGuard) {
         // Disarm Drop so it doesn't fire TIOCNXCL on the fd we're handing off.
         #[cfg(unix)]
         {
@@ -252,7 +329,7 @@ impl DeviceConnection {
         (
             ConnReader::Serial { inner: reader },
             ConnWriter::Serial { inner: writer },
-            FdGuard {
+            ConnGuard::Serial {
                 #[cfg(unix)]
                 fd,
             },
@@ -491,4 +568,37 @@ fn configure_and_convert(
 
     debug!("Serial port opened (exclusive): {}", port_path);
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A BLE notification larger than the caller's buffer is returned across
+    /// multiple `read_raw` calls, and channel close surfaces as EOF (`Ok(0)`).
+    #[tokio::test]
+    async fn ble_reader_splits_and_eofs() {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
+        let mut reader = ConnReader::Ble {
+            rx,
+            leftover: VecDeque::new(),
+        };
+
+        // One 5-byte notification, read 3 bytes at a time.
+        tx.send(vec![1, 2, 3, 4, 5]).await.unwrap();
+
+        let mut buf = [0u8; 3];
+        let n = reader.read_raw(&mut buf).await.unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(&buf[..3], &[1, 2, 3]);
+
+        let n = reader.read_raw(&mut buf).await.unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(&buf[..2], &[4, 5]);
+
+        // Dropping the sender (pump task ended) yields EOF.
+        drop(tx);
+        let n = reader.read_raw(&mut buf).await.unwrap();
+        assert_eq!(n, 0);
+    }
 }

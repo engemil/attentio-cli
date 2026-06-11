@@ -31,7 +31,7 @@ use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::device::connection::{ConnReader, ConnWriter, DeviceConnection, FdGuard};
+use crate::device::connection::{ConnGuard, ConnReader, ConnWriter, DeviceConnection};
 use crate::device::discovery::resolve_device;
 use crate::error::AttentioError;
 
@@ -145,6 +145,15 @@ pub fn effects_submode_name(submode: u8) -> &'static str {
 /// communicate with a device: resolve by serial/index, find the AP port,
 /// wait for CDC ACM to settle, and open the protocol client.
 pub async fn open_client(target: Option<&str>) -> Result<ApClient> {
+    // If --ble was given, route to the BLE transport. The serial `target`
+    // (serial/index) does not apply; the BLE selector carries name/address.
+    if let Some(selector) = crate::device::ble::active_selector() {
+        let (reader, writer, guard) = crate::device::ble::open(&selector)
+            .await
+            .context("failed to open BLE connection")?;
+        return Ok(ApClient::from_parts(reader, writer, guard));
+    }
+
     let dev = resolve_device(target)
         .await
         .context("failed to resolve device")?;
@@ -194,9 +203,9 @@ pub struct ApClient {
     claimed: bool,
     /// Reader task handle — aborted on drop.
     reader_task: Option<JoinHandle<()>>,
-    /// Holds the fd ownership for TIOCNXCL on drop. Must outlive the reader
-    /// task and the writer.
-    _fd_guard: Arc<FdGuard>,
+    /// Holds the transport resources (serial fd / BLE peripheral) for release on
+    /// drop. Must outlive the reader task and the writer.
+    _guard: Arc<ConnGuard>,
 }
 
 impl Drop for ApClient {
@@ -208,23 +217,24 @@ impl Drop for ApClient {
 }
 
 impl ApClient {
-    /// Create a new AP client from an open connection.
+    /// Create a new AP client from already-split transport parts.
     ///
-    /// Spawns the permanent reader task and returns immediately.
-    pub fn new(conn: DeviceConnection) -> Self {
-        let (reader, writer, fd_guard) = conn.into_parts();
+    /// Transport-agnostic — both the serial path ([`Self::new`]) and the BLE
+    /// path ([`crate::device::ble::open`]) funnel through here. Spawns the
+    /// permanent reader task and returns immediately.
+    pub fn from_parts(reader: ConnReader, writer: ConnWriter, guard: ConnGuard) -> Self {
         let (monitor_tx, _) = broadcast::channel(256);
         let pending: Arc<std::sync::Mutex<Option<oneshot::Sender<ApResponse>>>> =
             Arc::new(std::sync::Mutex::new(None));
-        let fd_guard = Arc::new(fd_guard);
+        let guard = Arc::new(guard);
 
         let reader_task = tokio::spawn(reader_loop(
             reader,
             monitor_tx.clone(),
             pending.clone(),
-            // Hold a clone of the fd guard inside the task so the fd is not
+            // Hold a clone of the guard inside the task so the transport is not
             // released until the task itself drops.
-            fd_guard.clone(),
+            guard.clone(),
         ));
 
         Self {
@@ -234,8 +244,16 @@ impl ApClient {
             timeout: AP_RESPONSE_TIMEOUT,
             claimed: false,
             reader_task: Some(reader_task),
-            _fd_guard: fd_guard,
+            _guard: guard,
         }
+    }
+
+    /// Create a new AP client from an open serial connection.
+    ///
+    /// Spawns the permanent reader task and returns immediately.
+    pub fn new(conn: DeviceConnection) -> Self {
+        let (reader, writer, guard) = conn.into_parts();
+        Self::from_parts(reader, writer, guard)
     }
 
     /// Create a new AP client, opening a connection to the given port.
@@ -653,13 +671,13 @@ impl ApClient {
 ///   any) via the oneshot stored in `pending`, AND broadcast via `monitor_tx`
 ///   so monitor views see them too.
 ///
-/// Exits cleanly when the underlying serial connection returns 0 bytes
-/// (EOF / device unplugged) or an I/O error.
+/// Exits cleanly when the underlying connection returns 0 bytes (EOF / device
+/// unplugged / BLE disconnect) or an I/O error.
 async fn reader_loop(
     mut reader: ConnReader,
     monitor_tx: broadcast::Sender<MonitorEvent>,
     pending: Arc<std::sync::Mutex<Option<oneshot::Sender<ApResponse>>>>,
-    _fd_guard: Arc<FdGuard>,
+    _guard: Arc<ConnGuard>,
 ) {
     let mut parser = ApParser::new();
     let mut buf = [0u8; 256];

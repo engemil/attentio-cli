@@ -10,6 +10,12 @@ pub struct Cli {
     #[arg(long, short, global = true)]
     pub device: Option<String>,
 
+    /// Connect over BLE instead of USB. Optionally pin a device with
+    /// `--ble=<name|MAC>`; bare `--ble` connects to the single advertised
+    /// AttentioLight-1.
+    #[arg(long, global = true, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    pub ble: Option<String>,
+
     /// Output results as JSON for scripting.
     #[arg(long, global = true)]
     pub json: bool,

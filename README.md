@@ -76,6 +76,12 @@ Clean up:
 cargo clean
 ```
 
+### Test
+
+```bash
+cargo test --lib
+```
+
 ### Install Locally
 
 ```bash
@@ -131,7 +137,7 @@ Two-pane dashboard for real-time device monitoring:
 
 ```bash
 # Device discovery
-attentio [--json] list                                                  # List connected devices (index, name, type, status, serial, ports)
+attentio [--json] list                                                  # List USB + BLE devices (index, name, type, status, serial/address, transport, paired)
 
 # Device info
 attentio [--json] metadata list [--device <#|serial>]                       # List all device metadata fields
@@ -198,9 +204,9 @@ The `settings save` and `settings load` commands use a simple JSON file:
 | Flag | Description |
 |------|-------------|
 | `-d, --device <#\|serial>` | Target device by index (from `attentio list`) or USB serial number. Defaults to the only connected device; prompts interactively when multiple devices are found |
+| `--ble[=<name\|MAC\|#>]` | Connect over BLE instead of USB. Bare `--ble` connects to the single advertised `AttentioLight-1`; pin a specific device with `--ble=<name>`, `--ble=<MAC>`, or `--ble=<#>` (the index from `attentio list`). Note the `=` is required. Verified on Linux/BlueZ |
 | `--json` | Output results as JSON with `status` field (`OK` or `ERROR`) for scripting/automation |
-| `-v, --verbose` | Enable verbose/debug output |
-
+| `-v, --verbose` | Enable verbose/debug output (includes `btleplug` / `bluez_async` logs for diagnosing BLE) |
 
 
 ## License

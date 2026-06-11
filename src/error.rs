@@ -31,6 +31,15 @@ pub enum AttentioError {
     #[error("command timed out after {seconds}s")]
     Timeout { seconds: u64 },
 
+    #[error("BLE error: {0}")]
+    Ble(String),
+
+    #[error("no BLE device found matching {selector}")]
+    BleNotFound { selector: String },
+
+    #[error("BLE pairing/bonding failed: {0}")]
+    BlePairing(String),
+
     #[error("{0}")]
     Other(String),
 }
@@ -53,6 +62,9 @@ impl AttentioError {
             AttentioError::Io(_) => "Io",
             AttentioError::Protocol { .. } => "Protocol",
             AttentioError::Timeout { .. } => "Timeout",
+            AttentioError::Ble(_) => "Ble",
+            AttentioError::BleNotFound { .. } => "BleNotFound",
+            AttentioError::BlePairing(_) => "BlePairing",
             AttentioError::Other(_) => "Other",
         }
     }
@@ -78,6 +90,9 @@ impl AttentioError {
             }),
             AttentioError::Protocol { message } => json!({
                 "protocol_message": message
+            }),
+            AttentioError::BleNotFound { selector } => json!({
+                "selector": selector
             }),
             _ => json!({}),
         }

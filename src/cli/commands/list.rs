@@ -3,16 +3,17 @@ use std::time::Duration;
 use anyhow::Result;
 use serde_json::json;
 
-use crate::device::discovery::{self, find_devices, AttentioDevice};
+use crate::device::discovery::{self, find_all_devices, AttentioDevice};
 use crate::error::AttentioError;
 use crate::json_output;
 
-/// Maximum time allowed for device enumeration (USB scan + per-device AP queries).
-const LIST_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum time allowed for device enumeration (USB scan + per-device AP
+/// queries + the best-effort BLE discovery scan).
+const LIST_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Execute the `list` command — enumerate and display connected device(s).
 pub async fn execute(json: bool) -> Result<()> {
-    let find_result = tokio::time::timeout(LIST_TIMEOUT, find_devices())
+    let find_result = tokio::time::timeout(LIST_TIMEOUT, find_all_devices())
         .await
         .map_err(|_| AttentioError::Timeout {
             seconds: LIST_TIMEOUT.as_secs(),
@@ -77,6 +78,13 @@ fn print_table(devices: &[AttentioDevice]) {
         .unwrap_or(6)
         .max(6);
 
+    let transport_width = devices
+        .iter()
+        .map(|d| d.transport.to_string().len())
+        .max()
+        .unwrap_or(9)
+        .max(9); // min = len("TRANSPORT")
+
     let serial_width = devices
         .iter()
         .map(|d| d.serial.len())
@@ -89,34 +97,48 @@ fn print_table(devices: &[AttentioDevice]) {
 
     // Print header
     println!(
-        "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<serial_width$}",
-        "#", "DEVICE NAME", "DEVICE TYPE", "STATUS", "SERIAL",
+        "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<transport_width$}  {:<serial_width$}",
+        "#", "DEVICE NAME", "DEVICE TYPE", "STATUS", "TRANSPORT", "SERIAL",
     );
     println!(
-        "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<serial_width$}",
+        "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<transport_width$}  {:<serial_width$}",
         "-".repeat(index_width),
         "-".repeat(device_name_width),
         "-".repeat(device_type_width),
         "-".repeat(mode_width),
+        "-".repeat(transport_width),
         "-".repeat(serial_width),
     );
 
     // Print rows (2 lines per device, blank line between devices)
     for (i, device) in devices.iter().enumerate() {
-        // Line 1: identity
+        // Line 1: identity. mode/transport are stringified first so the width
+        // padding applies (their Display impls don't forward the formatter width).
         println!(
-            "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<serial_width$}",
+            "{:<index_width$}  {:<device_name_width$}  {:<device_type_width$}  {:<mode_width$}  {:<transport_width$}  {:<serial_width$}",
             i + 1,
             device.product.as_deref().unwrap_or("-"),
             device.device_type.as_deref().unwrap_or("-"),
-            device.mode,
+            device.mode.to_string(),
+            device.transport.to_string(),
             device.serial,
         );
 
-        // Line 2: connection details (indented)
-        let ports = format_ports(device);
-        let usb_loc = device.usb_location.as_deref().unwrap_or("-");
-        println!("{}Ports: {}   USB: {}", indent, ports, usb_loc);
+        // Line 2: connection details (indented) — BLE shows its address; USB
+        // shows its CDC ports and bus location.
+        if device.transport == discovery::Transport::Ble {
+            let addr = device.ble_address.as_deref().unwrap_or("-");
+            let paired = match device.paired {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unknown",
+            };
+            println!("{}Addr: {}   Paired: {}", indent, addr, paired);
+        } else {
+            let ports = format_ports(device);
+            let usb_loc = device.usb_location.as_deref().unwrap_or("-");
+            println!("{}Ports: {}   USB: {}", indent, ports, usb_loc);
+        }
 
         // Blank line between devices (but not after the last one)
         if i + 1 < devices.len() {

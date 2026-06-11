@@ -48,6 +48,12 @@ Added
     key (`bluetoothctl remove`), re-scans, re-pairs, and retries the connect once
     — healing the common "host has an LTK the device no longer holds" case.
 
+- **BLE signal strength (RSSI)** — `ApClient::ble_rssi()` returns the connected
+  peripheral's live RSSI in dBm (via `ConnGuard::ble_rssi`, reading btleplug's
+  `Peripheral::properties().rssi`); serial connections return `None`. Lets
+  consumers (e.g. the desktop app) surface live BLE link quality without a
+  separate scan.
+
 - **New error variants** — `AttentioError::Ble`, `BleNotFound { selector }`, and
   `BlePairing` for BLE-specific failures, with JSON `error_type` / `context_data`
   support.

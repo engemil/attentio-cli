@@ -213,6 +213,21 @@ impl Drop for ConnGuard {
     }
 }
 
+impl ConnGuard {
+    /// Live signal strength (RSSI, dBm) of the underlying transport, if it has
+    /// one. Serial connections have no RSSI and return `None`; for BLE this reads
+    /// the connected peripheral's cached advertisement properties (best-effort —
+    /// returns `None` if the adapter hasn't surfaced an RSSI yet).
+    pub async fn ble_rssi(&self) -> Option<i16> {
+        match self {
+            ConnGuard::Serial { .. } => None,
+            ConnGuard::Ble { peripheral } => {
+                peripheral.properties().await.ok().flatten().and_then(|p| p.rssi)
+            }
+        }
+    }
+}
+
 impl DeviceConnection {
     /// Open an async serial connection to the given port path.
     ///

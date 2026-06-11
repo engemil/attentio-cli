@@ -262,6 +262,12 @@ impl ApClient {
         Ok(Self::new(conn))
     }
 
+    /// Live signal strength (RSSI, dBm) of the transport, or `None` for serial
+    /// connections (and BLE links whose RSSI the adapter hasn't surfaced yet).
+    pub async fn ble_rssi(&self) -> Option<i16> {
+        self._guard.ble_rssi().await
+    }
+
     /// Drain any stale bytes from the receive buffer.
     ///
     /// With the permanent reader architecture, "draining" is implicit: the

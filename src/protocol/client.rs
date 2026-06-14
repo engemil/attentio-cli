@@ -36,10 +36,10 @@ use crate::device::discovery::resolve_device;
 use crate::error::AttentioError;
 
 use super::packet::{
-    ap_error_name, build_packet, ApParser, ApResponse, CMD_CLAIM, CMD_GET_METADATA, CMD_GET_STATUS,
-    CMD_LED_OFF, CMD_LOG_GET_LEVEL, CMD_LOG_SET_LEVEL, CMD_METADATA_GET, CMD_PING, CMD_POWER_OFF,
-    CMD_POWER_ON, CMD_RELEASE, CMD_SETTINGS_GET, CMD_SETTINGS_LIST, CMD_SETTINGS_SET,
-    CMD_SET_BRIGHTNESS, CMD_SET_HSV, CMD_SET_RGB,
+    ap_error_name, build_packet, ApParser, ApResponse, AP_ERR_NOT_CONTROLLER, CMD_CLAIM,
+    CMD_GET_METADATA, CMD_GET_STATUS, CMD_LED_OFF, CMD_LOG_GET_LEVEL, CMD_LOG_SET_LEVEL,
+    CMD_METADATA_GET, CMD_PING, CMD_POWER_OFF, CMD_POWER_ON, CMD_RELEASE, CMD_SETTINGS_GET,
+    CMD_SETTINGS_LIST, CMD_SETTINGS_SET, CMD_SET_BRIGHTNESS, CMD_SET_HSV, CMD_SET_RGB,
 };
 
 /// Events emitted by the AP client monitor tap.
@@ -391,8 +391,15 @@ impl ApClient {
     /// (cmd 0x80–0x8F) are filtered out before reaching `send_command`, so
     /// this function will never observe an event response.
     async fn send_command_ok(&mut self, cmd: u8, payload: &[u8]) -> Result<Vec<u8>, AttentioError> {
-        let resp = self.send_command(cmd, payload).await?;
+        Self::interpret_ok(self.send_command(cmd, payload).await?)
+    }
 
+    /// Map a parsed AP response to its payload on success, or a descriptive
+    /// [`AttentioError::Protocol`] on an error/event/unexpected response.
+    ///
+    /// Split out of [`send_command_ok`] so [`send_claimed`] can inspect the raw
+    /// response (to detect a takeover) before applying the same mapping.
+    fn interpret_ok(resp: ApResponse) -> Result<Vec<u8>, AttentioError> {
         if resp.is_ok() {
             Ok(resp.payload)
         } else if resp.is_error() {
@@ -418,6 +425,30 @@ impl ApClient {
                 message: format!("unexpected response command: 0x{:02X}", resp.cmd),
             })
         }
+    }
+
+    /// Send a claim-requiring command, auto-claiming first and transparently
+    /// re-claiming (taking over) + retrying once if the device reports we are no
+    /// longer the active controller (`AP_ERR_NOT_CONTROLLER`).
+    ///
+    /// The firmware uses a last-writer-wins takeover model: a CLAIM from another
+    /// interface (e.g. switching between this device's USB and BLE links) silently
+    /// displaces us and is signalled only by an out-of-band SESSION_END event,
+    /// which this command-only client never observes. As a result our cached
+    /// `claimed` flag can go stale — `ensure_claimed` then skips the re-CLAIM and
+    /// the command is rejected with `AP_ERR_NOT_CONTROLLER`. Healing it here (one
+    /// bounded retry) keeps that error from surfacing to the caller.
+    async fn send_claimed(&mut self, cmd: u8, payload: &[u8]) -> Result<Vec<u8>, AttentioError> {
+        self.ensure_claimed().await?;
+        let resp = self.send_command(cmd, payload).await?;
+        if resp.is_error() && resp.error_code() == Some(AP_ERR_NOT_CONTROLLER) {
+            // Stale claim — another interface took over. Re-claim (takeover) and
+            // retry the command exactly once.
+            self.claimed = false;
+            self.claim().await?;
+            return Self::interpret_ok(self.send_command(cmd, payload).await?);
+        }
+        Self::interpret_ok(resp)
     }
 
     // ── Session commands ─────────────────────────────────────────────────────
@@ -547,8 +578,7 @@ impl ApClient {
     ///
     /// Payload: `[R:1][G:1][B:1]` — each 0-255.
     pub async fn set_rgb(&mut self, r: u8, g: u8, b: u8) -> Result<(), AttentioError> {
-        self.ensure_claimed().await?;
-        self.send_command_ok(CMD_SET_RGB, &[r, g, b]).await?;
+        self.send_claimed(CMD_SET_RGB, &[r, g, b]).await?;
         Ok(())
     }
 
@@ -556,14 +586,13 @@ impl ApClient {
     ///
     /// Payload: `[H:2 little-endian][S:1][V:1]` — H=0-359, S=0-100, V=0-100.
     pub async fn set_hsv(&mut self, h: u16, s: u8, v: u8) -> Result<(), AttentioError> {
-        self.ensure_claimed().await?;
         let payload = [
             (h & 0xFF) as u8,        // H low byte
             ((h >> 8) & 0xFF) as u8, // H high byte
             s,
             v,
         ];
-        self.send_command_ok(CMD_SET_HSV, &payload).await?;
+        self.send_claimed(CMD_SET_HSV, &payload).await?;
         Ok(())
     }
 
@@ -571,16 +600,13 @@ impl ApClient {
     ///
     /// Payload: `[brightness:1]` — 0-100 (percentage).
     pub async fn set_brightness(&mut self, brightness: u8) -> Result<(), AttentioError> {
-        self.ensure_claimed().await?;
-        self.send_command_ok(CMD_SET_BRIGHTNESS, &[brightness])
-            .await?;
+        self.send_claimed(CMD_SET_BRIGHTNESS, &[brightness]).await?;
         Ok(())
     }
 
     /// Turn LEDs off (LED_OFF 0x20). Requires claim.
     pub async fn led_off(&mut self) -> Result<(), AttentioError> {
-        self.ensure_claimed().await?;
-        self.send_command_ok(CMD_LED_OFF, &[]).await?;
+        self.send_claimed(CMD_LED_OFF, &[]).await?;
         Ok(())
     }
 
@@ -588,15 +614,13 @@ impl ApClient {
 
     /// Power on the device (POWER_ON 0x10). Requires claim.
     pub async fn power_on(&mut self) -> Result<(), AttentioError> {
-        self.ensure_claimed().await?;
-        self.send_command_ok(CMD_POWER_ON, &[]).await?;
+        self.send_claimed(CMD_POWER_ON, &[]).await?;
         Ok(())
     }
 
     /// Power off the device (POWER_OFF 0x11). Requires claim.
     pub async fn power_off(&mut self) -> Result<(), AttentioError> {
-        self.ensure_claimed().await?;
-        self.send_command_ok(CMD_POWER_OFF, &[]).await?;
+        self.send_claimed(CMD_POWER_OFF, &[]).await?;
         Ok(())
     }
 
@@ -628,15 +652,13 @@ impl ApClient {
     /// Request payload: `[key_len:1][key][val_len:1][val]`
     /// Response: bare OK (no payload).
     pub async fn settings_set(&mut self, key: &str, value: &str) -> Result<(), AttentioError> {
-        self.ensure_claimed().await?;
-
         let mut req = Vec::with_capacity(2 + key.len() + value.len());
         req.push(key.len() as u8);
         req.extend_from_slice(key.as_bytes());
         req.push(value.len() as u8);
         req.extend_from_slice(value.as_bytes());
 
-        self.send_command_ok(CMD_SETTINGS_SET, &req).await?;
+        self.send_claimed(CMD_SETTINGS_SET, &req).await?;
         Ok(())
     }
 

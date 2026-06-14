@@ -13,6 +13,24 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-06-14)
+
+Fixed
+
+- **Transparent re-claim on interface takeover** — a claim-requiring command
+  (`SET_RGB`, `SET_HSV`, `SET_BRIGHTNESS`, `LED_OFF`, `POWER_ON`, `POWER_OFF`,
+  `SETTINGS_SET`) that the device rejects with `AP_ERR_NOT_CONTROLLER` now
+  transparently re-`CLAIM`s (takeover) and retries once, instead of surfacing
+  `device returned error 0x01: not active controller`. The firmware uses a
+  last-writer-wins takeover model and signals a displaced controller only via an
+  out-of-band `SESSION_END` event, which this command-only client never observes,
+  so `ApClient`'s cached `claimed` flag could go stale (e.g. after switching
+  between a device's USB and BLE links). New private `ApClient::send_claimed`
+  (with the response→`Result` mapping split into `interpret_ok`) in
+  `src/protocol/client.rs`; the bounded single retry keeps it loop-free.
+
+---
+
 ## [Development] (2026-06-11)
 
 Added

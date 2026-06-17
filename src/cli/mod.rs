@@ -106,8 +106,32 @@ pub enum Command {
         action: LoglevelAction,
     },
 
+    /// Manage BLE pairing (host bond) for a device.
+    Ble {
+        #[command(subcommand)]
+        action: BleAction,
+    },
+
     /// Print CLI version information.
     Version,
+}
+
+/// Subcommands for `attentio ble`.
+#[derive(Debug, Subcommand)]
+pub enum BleAction {
+    /// Pair (bond) with a BLE device.
+    Pair {
+        /// Target: BD_ADDR, advertised name, or index from `attentio list`.
+        /// Omit to pair the single advertised AttentioLight-1.
+        target: Option<String>,
+    },
+
+    /// Unpair (remove the host bond) from a BLE device.
+    Unpair {
+        /// Target: BD_ADDR, advertised name, or index from `attentio list`.
+        /// Omit for the single advertised AttentioLight-1.
+        target: Option<String>,
+    },
 }
 
 /// Subcommands for `attentio metadata`.

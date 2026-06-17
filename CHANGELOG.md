@@ -13,6 +13,28 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-06-17)
+
+Changed
+
+- **BLE no longer auto-pairs on connect** — `ble::open` now requires the device to
+  be already bonded and returns an actionable "pair first" error otherwise, instead
+  of silently running `bluetoothctl pair` on any unbonded connect. Pairing is now an
+  explicit action (see `ble pair` below). `attentio --ble <cmd>` on an unpaired
+  device therefore errors rather than auto-pairing. `ensure_bonded` is split into a
+  public `pair` and an internal `require_bonded`; the bond auto-heal (re-pairing a
+  device that was *already* bonded) is unchanged. Linux/BlueZ only — non-Linux
+  bonding is still managed by the OS agent.
+
+Added
+
+- **`attentio ble pair|unpair [target]`** — explicit BLE bond management. `target`
+  is a BD_ADDR, advertised name, or `attentio list` index; omit it for the single
+  advertised AttentioLight-1. Backed by new `ble::pair`, `ble::unpair`, and
+  `ble::resolve_address` (`src/device/ble.rs`) and `src/cli/commands/ble.rs`.
+
+---
+
 ## [Development] (2026-06-14)
 
 Fixed

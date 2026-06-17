@@ -123,6 +123,9 @@ async fn main() -> Result<()> {
             cli::commands::loglevel::execute(action, global_device, cli.json).await
         }
 
+        // BLE pairing management
+        Command::Ble { action } => cli::commands::ble::execute(action, cli.json).await,
+
         // Version info
         Command::Version => cli::commands::version::execute(cli.json),
     };

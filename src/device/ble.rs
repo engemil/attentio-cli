@@ -140,12 +140,12 @@ pub async fn open(
     // desync".
     let was_bonded = paired_status(&address).await == Some(true);
 
-    // Bond BEFORE connecting/writing. The TX characteristic is
-    // encryption-required, so the first write must happen over an encrypted
-    // link; otherwise BlueZ blocks the write trying to pair and the D-Bus call
-    // hits its 25 s reply timeout. ensure_bonded hard-errors (with manual
-    // instructions) rather than letting a doomed write hang.
-    ensure_bonded(&address).await?;
+    // Require an existing bond BEFORE connecting/writing. The TX characteristic is
+    // encryption-required, so the first write must happen over an encrypted link.
+    // The connect path no longer auto-pairs: require_bonded hard-errors (pointing
+    // the user at `attentio ble pair` / the desktop Pair button) rather than
+    // silently pairing or letting a doomed write hang.
+    require_bonded(&address).await?;
 
     match attempt_open(peripheral).await {
         Ok(parts) => Ok(parts),
@@ -168,7 +168,8 @@ pub async fn open(
             // leaves it in BlueZ's cache so the re-pair below can find it).
             tokio::time::sleep(Duration::from_millis(500)).await;
             let peripheral = scan_and_match(&adapter, sel).await?;
-            ensure_bonded(&address).await?;
+            // Re-pair: this heal only runs for a device that was already bonded.
+            pair(&address).await?;
             attempt_open(peripheral).await
         }
         Err(e) => Err(e),
@@ -510,15 +511,59 @@ async fn resolve_index(n: usize) -> Result<BleSelector, AttentioError> {
     }
 }
 
-/// Ensure the device is bonded before any encryption-required write.
+/// Resolve a [`BleSelector`] to a concrete BD_ADDR, for the `attentio ble`
+/// commands which act on the host bond rather than a live connection.
+///
+/// `Address` is used as-is; `Index` reuses [`resolve_index`]; `Name`/`Any` run a
+/// discovery scan and match (erroring on zero or multiple matches).
+pub async fn resolve_address(sel: &BleSelector) -> Result<String, AttentioError> {
+    match sel {
+        BleSelector::Address(a) => Ok(a.clone()),
+        BleSelector::Index(n) => match resolve_index(*n).await? {
+            BleSelector::Address(a) => Ok(a),
+            _ => unreachable!("resolve_index always returns an Address"),
+        },
+        BleSelector::Name(name) => {
+            let matches: Vec<BleDeviceInfo> = scan(SCAN_TIMEOUT)
+                .await
+                .into_iter()
+                .filter(|d| d.name.as_deref() == Some(name.as_str()))
+                .collect();
+            match matches.len() {
+                1 => Ok(matches.into_iter().next().unwrap().address),
+                0 => Err(AttentioError::BleNotFound {
+                    selector: format!("name '{name}'"),
+                }),
+                _ => Err(AttentioError::Ble(format!(
+                    "multiple BLE devices named '{name}' — use the address"
+                ))),
+            }
+        }
+        BleSelector::Any => {
+            let found = scan(SCAN_TIMEOUT).await;
+            match found.len() {
+                1 => Ok(found.into_iter().next().unwrap().address),
+                0 => Err(AttentioError::BleNotFound {
+                    selector: "any".into(),
+                }),
+                _ => Err(AttentioError::Ble(
+                    "multiple BLE devices found — specify a name or address".into(),
+                )),
+            }
+        }
+    }
+}
+
+/// Pair (bond) the device explicitly. Idempotent.
 ///
 /// On Linux, btleplug 0.11 exposes no `pair()`, so we bond via `bluetoothctl`.
-/// If the device is already bonded this is a fast no-op (the link re-encrypts
-/// from stored keys with no agent). If not, we attempt a Just-Works auto-pair
-/// and, failing that, return an actionable error telling the user to pair once
-/// manually — we never fall through to a write that would hang for 25 s.
+/// If already bonded this is a fast no-op (the link re-encrypts from stored keys
+/// with no agent). If not, we attempt a Just-Works auto-pair and, failing that,
+/// return an actionable error. The TX characteristic is encryption-required, so a
+/// bond must exist before the first write; this is the explicit pairing entry
+/// point — the connect path itself no longer auto-pairs (see [`require_bonded`]).
 #[cfg(target_os = "linux")]
-async fn ensure_bonded(address: &str) -> Result<(), AttentioError> {
+pub async fn pair(address: &str) -> Result<(), AttentioError> {
     if is_paired(address).await {
         debug!("BLE device {address} already bonded");
         return Ok(());
@@ -541,8 +586,33 @@ async fn ensure_bonded(address: &str) -> Result<(), AttentioError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn ensure_bonded(_address: &str) -> Result<(), AttentioError> {
+pub async fn pair(_address: &str) -> Result<(), AttentioError> {
     // macOS/Windows pair via the OS agent on the first encrypted GATT operation.
+    Ok(())
+}
+
+/// Require that the device is already bonded before connecting.
+///
+/// The connect path no longer auto-pairs; pairing is an explicit user action
+/// (`attentio ble pair`, or the desktop Pair button — see [`pair`]). On Linux this
+/// errors with actionable instructions if the device isn't bonded. On non-Linux
+/// hosts bonding is managed by the OS agent (and `paired_status` is unavailable),
+/// so this can't enforce and returns `Ok`.
+#[cfg(target_os = "linux")]
+async fn require_bonded(address: &str) -> Result<(), AttentioError> {
+    if is_paired(address).await {
+        return Ok(());
+    }
+    Err(AttentioError::BlePairing(format!(
+        "device {address} is not paired. Pair it first:\n  \
+         attentio ble pair {address}\n  \
+         (or use the Pair button in the desktop app)."
+    )))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn require_bonded(_address: &str) -> Result<(), AttentioError> {
+    // macOS/Windows manage bonding via the OS agent; can't enforce here.
     Ok(())
 }
 
@@ -604,6 +674,42 @@ async fn remove_bond(address: &str) {
 
 #[cfg(not(target_os = "linux"))]
 async fn remove_bond(_address: &str) {}
+
+/// Remove the host's BLE bond for `address` ("unpair" / "forget"), returning a
+/// `Result` so callers can report success or failure to the user.
+///
+/// On Linux this drives `bluetoothctl remove`, which also disconnects the device.
+/// Unlike the best-effort [`remove_bond`] used by the bond auto-heal, this surfaces
+/// a `bluetoothctl` failure to the caller. On non-Linux hosts bonding is managed by
+/// the OS with no programmatic removal here, so this returns an error.
+#[cfg(target_os = "linux")]
+pub async fn unpair(address: &str) -> Result<(), AttentioError> {
+    use tokio::process::Command;
+
+    let out = Command::new("bluetoothctl")
+        .arg("remove")
+        .arg(address)
+        .output()
+        .await
+        .map_err(|e| AttentioError::Ble(format!("bluetoothctl unavailable: {e}")))?;
+
+    if out.status.success() {
+        debug!("BLE unpaired (removed host bond) for {address}");
+        Ok(())
+    } else {
+        Err(AttentioError::Ble(format!(
+            "bluetoothctl remove {address} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn unpair(_address: &str) -> Result<(), AttentioError> {
+    Err(AttentioError::Ble(
+        "BLE bond management (unpair) is only supported on Linux".into(),
+    ))
+}
 
 /// Drive `bluetoothctl` non-interactively to Just-Works pair the device.
 ///

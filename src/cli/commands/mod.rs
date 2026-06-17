@@ -1,3 +1,4 @@
+pub mod ble;
 pub mod dfu;
 pub mod list;
 pub mod loglevel;

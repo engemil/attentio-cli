@@ -162,6 +162,10 @@ pub struct AttentioDevice {
     /// or when it can't be determined.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paired: Option<bool>,
+    /// Advertisement RSSI (dBm) from the BLE scan; `None` for USB or when not
+    /// reported by the adapter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rssi: Option<i16>,
 }
 
 impl AttentioDevice {
@@ -309,6 +313,7 @@ pub async fn find_ble_devices() -> Vec<AttentioDevice> {
             transport: Transport::Ble,
             ble_address: Some(info.address),
             paired,
+            rssi: info.rssi,
         });
     }
     devices
@@ -536,6 +541,7 @@ fn find_dfu_only_devices() -> Result<Vec<AttentioDevice>, AttentioError> {
                 transport: Transport::Usb,
                 ble_address: None,
                 paired: None,
+                rssi: None,
             });
         }
     }
@@ -830,6 +836,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
                 transport: Transport::Usb,
                 ble_address: None,
                 paired: None,
+                rssi: None,
             }
         } else {
             // Single CDC
@@ -852,6 +859,7 @@ pub fn devices_from_ports(ports: Vec<serialport::SerialPortInfo>) -> Vec<Attenti
                 transport: Transport::Usb,
                 ble_address: None,
                 paired: None,
+                rssi: None,
             }
         };
 

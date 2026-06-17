@@ -133,7 +133,11 @@ fn print_table(devices: &[AttentioDevice]) {
                 Some(false) => "no",
                 None => "unknown",
             };
-            println!("{}Addr: {}   Paired: {}", indent, addr, paired);
+            let rssi = match device.rssi {
+                Some(v) => format!("{} dBm", v),
+                None => "-".to_string(),
+            };
+            println!("{}Addr: {}   Paired: {}   RSSI: {}", indent, addr, paired, rssi);
         } else {
             let ports = format_ports(device);
             let usb_loc = device.usb_location.as_deref().unwrap_or("-");

@@ -32,6 +32,14 @@ Added
   is a BD_ADDR, advertised name, or `attentio list` index; omit it for the single
   advertised AttentioLight-1. Backed by new `ble::pair`, `ble::unpair`, and
   `ble::resolve_address` (`src/device/ble.rs`) and `src/cli/commands/ble.rs`.
+- **BLE advertisement RSSI in `attentio list`** — BLE devices now show their
+  signal strength on the detail line: `Addr: … Paired: …  RSSI: -63 dBm`
+  (`-` when not available). `BleDeviceInfo` gains `rssi: Option<i16>`; RSSI is
+  captured from btleplug's `DeviceDiscovered`/`DeviceUpdated` event stream during
+  the active scan (calling `properties()` on events fires while BlueZ still has
+  a live advertisement RSSI; reading it after `stop_scan` returns a stale cache).
+  Threaded through `AttentioDevice.rssi` (`src/device/discovery.rs`) and rendered
+  in `src/cli/commands/list.rs`.
 
 ---
 

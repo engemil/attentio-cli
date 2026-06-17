@@ -16,7 +16,9 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use btleplug::api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter};
+use std::collections::HashMap;
+
+use btleplug::api::{Central, CentralEvent, Characteristic, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Manager, Peripheral};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
@@ -372,6 +374,8 @@ pub struct BleDeviceInfo {
     pub address: String,
     /// Advertised local name, if present.
     pub name: Option<String>,
+    /// Advertisement RSSI in dBm, if the adapter reported it.
+    pub rssi: Option<i16>,
 }
 
 /// Best-effort scan for Attentio devices, for `attentio list`.
@@ -404,7 +408,38 @@ async fn scan_inner(duration: Duration) -> Result<Vec<BleDeviceInfo>, AttentioEr
         })
         .await
         .map_err(ble_err)?;
-    tokio::time::sleep(duration).await;
+
+    // Capture RSSI from advertisement events while the scan is live.
+    // BlueZ only sets the RSSI D-Bus property at the moment an advertisement
+    // is received; calling properties() after stop_scan returns a stale cache.
+    let mut events = adapter.events().await.map_err(ble_err)?;
+    let mut rssi_map: HashMap<String, i16> = HashMap::new();
+
+    let deadline = tokio::time::sleep(duration);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            event = events.next() => match event {
+                Some(
+                    CentralEvent::DeviceDiscovered(id)
+                    | CentralEvent::DeviceUpdated(id)
+                ) => {
+                    if let Ok(p) = adapter.peripheral(&id).await {
+                        if let Ok(Some(props)) = p.properties().await {
+                            if let Some(rssi) = props.rssi {
+                                rssi_map.insert(props.address.to_string(), rssi);
+                            }
+                        }
+                    }
+                }
+                None => break,
+                _ => {}
+            }
+        }
+    }
+
     let peripherals = adapter.peripherals().await.map_err(ble_err)?;
     let _ = adapter.stop_scan().await;
 
@@ -423,6 +458,7 @@ async fn scan_inner(duration: Duration) -> Result<Vec<BleDeviceInfo>, AttentioEr
         found.push(BleDeviceInfo {
             address: props.address.to_string(),
             name: props.local_name,
+            rssi: rssi_map.get(&props.address.to_string()).copied(),
         });
     }
     Ok(found)

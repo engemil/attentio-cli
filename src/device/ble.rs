@@ -134,6 +134,39 @@ pub async fn open(
     let peripheral = scan_and_match(&adapter, sel).await?;
     let address = peripheral.address().to_string();
 
+    let already_connected_on_entry = peripheral.is_connected().await.unwrap_or(false);
+    debug!(
+        "BLE open: device {} — already_connected={} bonded={}",
+        address,
+        already_connected_on_entry,
+        paired_status(&address).await == Some(true)
+    );
+
+    // btleplug's bluez-async backend silently maps AlreadyConnected → Ok in
+    // connect(), so connect_with_retry() never sees the error. Detecting it
+    // here — before connect() is called — and disconnecting first ensures the
+    // subsequent connect() in attempt_open starts a genuine fresh HCI connection
+    // that btleplug properly wires up for D-Bus notification delivery.
+    // Without this, the write to TX is ACKed by the device but the response
+    // notification is silently dropped and every AP command times out.
+    if already_connected_on_entry {
+        warn!("BLE {address}: device already connected — disconnecting for a fresh session");
+        let _ = peripheral.disconnect().await;
+        let dc_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if !peripheral.is_connected().await.unwrap_or(true) {
+                break;
+            }
+            if Instant::now() >= dc_deadline {
+                warn!("BLE {address}: device still connected after 5 s — proceeding anyway");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Grace period for the device to return to advertising.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
     // Did the host already hold a bond on entry? If so, a service-discovery
     // drop on connect signals a host/device bond *mismatch* — the device's NVS
     // bond was lost (re-flash, NVS erase, or round-robin eviction) while BlueZ
@@ -174,6 +207,17 @@ pub async fn open(
             pair(&address).await?;
             attempt_open(peripheral).await
         }
+        // After an explicit `pair`, the device may briefly drop the link while
+        // BlueZ finishes GATT discovery on the fresh (post-disconnect) connection.
+        // Wait 2 s so the device returns to advertising and BlueZ's GATT cache
+        // is warm from the first attempt, then retry once — the second connect
+        // is fast and lands the AP write before any firmware idle timeout.
+        Err(AttentioError::Ble(ref m)) if m.contains("Not connected") => {
+            warn!("BLE {address}: Not connected during open; waiting 2 s then retrying");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let peripheral = scan_and_match(&adapter, sel).await?;
+            attempt_open(peripheral).await
+        }
         Err(e) => Err(e),
     }
 }
@@ -192,6 +236,7 @@ async fn attempt_open(
 
     debug!("BLE subscribing to RX notifications");
     step_timeout(GATT_OP_TIMEOUT, "subscribe", peripheral.subscribe(&rx_char)).await?;
+    debug!("BLE subscribed to RX notifications");
 
     // Pump notifications (a Stream) into an mpsc the ConnReader::Ble drains.
     let mut notifs =
@@ -277,10 +322,39 @@ fn is_bond_mismatch(e: &AttentioError) -> bool {
 /// as success; [`discover_chars`] then polls for the characteristics with a
 /// longer budget. Only the retry forces a clean `disconnect()` first (clearing a
 /// stale/half connection); the first attempt reuses any cached GATT for speed.
+///
+/// Special case — "Already Connected": BlueZ returns this when the device is still
+/// connected from a prior session (e.g. the bluetoothctl pairing session left open by
+/// `auto_pair`). Reusing that connection silently breaks btleplug's notification
+/// routing — the `notifications()` stream never delivers events because the D-Bus
+/// PropertiesChanged subscription is not wired up for a session that wasn't opened
+/// by us. We therefore treat "Already Connected" the same as any other error on
+/// attempt 1: fall through to attempt 2, which disconnects first and reconnects
+/// fresh, giving btleplug a clean session with full GATT + notification setup.
 async fn connect_with_retry(peripheral: &Peripheral) -> Result<(), AttentioError> {
     for attempt in 1..=2u8 {
         if attempt > 1 {
             let _ = peripheral.disconnect().await;
+            // Poll until BlueZ confirms disconnect rather than sleeping a fixed 300 ms.
+            // If connect() is called while the device is still connected, BlueZ may
+            // return a service-discovery error (not AlreadyConnected) while
+            // is_connected() is still true — the old code treated that as a live
+            // link and returned Ok with the stale connection, breaking notifications.
+            let dc_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if !peripheral.is_connected().await.unwrap_or(true) {
+                    break;
+                }
+                if Instant::now() >= dc_deadline {
+                    warn!(
+                        "BLE {}: device still connected after 5 s — proceeding anyway",
+                        peripheral.address()
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            // Grace period so the device returns to advertising before we reconnect.
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
 
@@ -291,10 +365,17 @@ async fn connect_with_retry(peripheral: &Peripheral) -> Result<(), AttentioError
                 return Ok(());
             }
             Ok(Err(e)) => {
-                // The link can be up even though btleplug's internal 5 s
-                // service-discovery wait elapsed; if so, proceed and resolve
-                // services ourselves.
-                if peripheral.is_connected().await.unwrap_or(false) {
+                let msg = e.to_string();
+                // "Already Connected" = device still connected from a prior session
+                // (e.g. auto_pair's bluetoothctl session). Reusing it breaks btleplug's
+                // notification setup. Do NOT treat as success — fall through to attempt 2,
+                // which disconnects first and reconnects fresh.
+                let already_connected = msg.to_lowercase().contains("already connected");
+
+                if !already_connected && peripheral.is_connected().await.unwrap_or(false) {
+                    // Link is up but connect() returned a non-AlreadyConnected error
+                    // (typically service-discovery timeout after a genuine new connection).
+                    // Proceed with the live link; discover_chars polls for characteristics.
                     debug!("BLE link up to {} (services pending: {e})", peripheral.address());
                     return Ok(());
                 }
@@ -307,7 +388,15 @@ async fn connect_with_retry(peripheral: &Peripheral) -> Result<(), AttentioError
                          connected, then `bluetoothctl remove {addr}` and re-pair."
                     )));
                 }
-                warn!("BLE connect attempt {attempt} failed: {e}; retrying");
+                if already_connected {
+                    warn!(
+                        "BLE {}: device still connected from prior session — \
+                         disconnecting for a fresh reconnect",
+                        peripheral.address()
+                    );
+                } else {
+                    warn!("BLE connect attempt {attempt} failed: {e}; retrying");
+                }
             }
             Err(_) if attempt == 2 => {
                 return Err(AttentioError::Ble(format!(
@@ -778,8 +867,16 @@ async fn auto_pair(address: &str) {
         let setup = format!("power on\nagent on\ndefault-agent\npair {address}\n");
         let _ = stdin.write_all(setup.as_bytes()).await;
         let _ = stdin.flush().await;
-        // Give Just-Works pairing time to complete before quitting.
+        // Give Just-Works pairing time to complete.
         tokio::time::sleep(Duration::from_secs(8)).await;
+        // Explicitly disconnect before quitting. bluetoothctl does NOT disconnect
+        // when it exits — BlueZ keeps the HCI link open. That stale connection
+        // triggers the already_connected pre-check in open() on the next call.
+        // Send disconnect first, wait 2 s for BlueZ to complete it (BLE disconnect
+        // is async — sending quit immediately races with the disconnect), then quit.
+        let _ = stdin.write_all(format!("disconnect {address}\n").as_bytes()).await;
+        let _ = stdin.flush().await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let _ = stdin.write_all(b"quit\n").await;
         let _ = stdin.flush().await;
         drop(stdin);

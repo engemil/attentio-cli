@@ -13,6 +13,33 @@ Note: Update `Cargo.toml` when publishing new version.
 
 ---
 
+## [Development] (2026-06-20)
+
+Fixed
+
+- **Removed the BLE double-subscribe workaround** — `attempt_open()` previously
+  subscribed → unsubscribed → re-subscribed to the RX characteristic, believing
+  that the first `subscribe()` triggered just-in-time encryption (a BlueZ
+  `StartNotify`+encryption race). Device-side monitor output confirmed this was
+  wrong: the RX CCCD has no encryption flag, so `subscribe()` does not trigger
+  pairing — encryption happens on CONNECT from the stored bond, before any
+  subscribe. The workaround added ~200 ms latency for no benefit. Removed.
+  The real BLE-only fix was on the STM32 side (thread starvation — see the
+  STM32 firmware CHANGELOG).
+
+Changed
+
+- **BLE connect robustness** — `ble::open()` now detects and disconnects a
+  stale BlueZ connection (left over from a prior `bluetoothctl` session or an
+  unclean disconnect) before connecting fresh. `connect_with_retry()` polls
+  `is_connected()` after `disconnect()` rather than sleeping a fixed 300 ms,
+  and treats BlueZ's "Already Connected" as an error to retry from (not as
+  success). `auto_pair()` now sends an explicit `disconnect` before `quit` so
+  bluetoothctl doesn't leave the HCI link open. These are safety nets that
+  prevent edge-case notification routing failures on BlueZ.
+
+---
+
 ## [Development] (2026-06-17)
 
 Changed
